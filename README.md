@@ -67,12 +67,40 @@ It also handles these:
 ```
 photobox serve [folders...] [--port 4567] [--open] [--data ~/.photobox]
 photobox scan <folders...>          # index once, print a summary, exit
-npm test                            # sidecar unit tests + end-to-end import of a fake Takeout
+photobox export <dest> [folders...] [--dry-run]   # copy everything into <dest>/YYYY/MM/
+npm test                            # sidecar + export tests, end-to-end import of a fake Takeout
 npm run fake-takeout -- fixtures/demo   # build a demo export that hits every edge case
 ```
 
 The library database and thumbnail cache live in `~/.photobox`. You can change this with
 `--data` or `PHOTOBOX_DATA`. Deleting that folder resets Photobox and leaves your photos alone.
+
+## Exporting to a folder you own
+
+```
+photobox export ~/Photos ~/Downloads/Takeout
+```
+
+This copies every photo and video into `~/Photos/YYYY/MM/`, by the date it was taken in the
+place it was taken. After that the folder is all you need: no Takeout, no Photobox, no database.
+
+- **Once each.** A photo that appears in a year folder and in an album is copied once, under its
+  real name (from the sidecar when Takeout cut the name short). Two different photos with the same
+  name in one month become `IMG_0001.JPG` and `IMG_0001 (2).JPG`.
+- **Dated.** Each copy's modified time is set to when the photo was taken.
+- **Live photos stay paired.** The clip gets its still's name: `IMG_1234.HEIC` and `IMG_1234.MOV`.
+- **Nothing is overwritten.** Sources are only read. If a different file already has a target
+  name, it stays and the photo gets the next free name. Copies are written to a hidden `.partial`
+  file first, so an interrupted export never leaves half a photo.
+- **Run it again** to copy only what's new. A file you delete from the export is copied again
+  next time. To drop a photo for good, delete it from the source.
+- **`photobox-export.json`** in the folder records each file's albums, favorite flag,
+  description, people, place and exact time. It's also how the next run knows what's already
+  there. If it gets lost, files that are already in place are recognized by their content.
+
+`--dry-run` lists what would be copied. Folders given to `export` are added and scanned first.
+Without folders it rescans the library's folders, or, if Photobox is running, exports that
+running library as it is.
 
 ## Desktop app
 
@@ -100,7 +128,7 @@ it's opened from Finder.
 ## Layout
 
 ```
-bin/photobox.js          CLI: serve / scan
+bin/photobox.js          CLI: serve / scan / export
 src/app.js               starts library + indexer + watcher + server; single-instance lock
 desktop/main.js          Electron shell: window, menu, native dialogs, Dock progress
 desktop/server-process.js  library server inside an Electron utility process
@@ -111,6 +139,7 @@ src/metadata.js          EXIF (exifr) and video metadata (ffprobe)
 src/dates.js             timestamp parsing, filename dates, GPS → time zone
 src/thumbs.js            thumbnails/previews (sharp, sips and ffmpeg fallbacks)
 src/db.js                SQLite schema + queries (node:sqlite, no native build)
+src/export.js            copy the library into <dest>/YYYY/MM/ + photobox-export.json
 src/watcher.js           chokidar → debounced rescans of the affected folders
 src/server.js            local HTTP API, localhost only
 public/                  the app: justified timeline, year scrubber, albums, viewer

@@ -220,6 +220,26 @@ export class Library {
     return this.q('SELECT path FROM files WHERE media_id = ? ORDER BY length(path) LIMIT 1').get(id)?.path ?? null;
   }
 
+  /**
+   * Every media item with its file paths and album names, oldest first. A live
+   * photo's clip comes right after its still, so the still is placed first.
+   */
+  exportItems() {
+    const rows = this.q(`
+      SELECT m.* FROM media m LEFT JOIN media s ON s.id = m.live_of
+      ORDER BY coalesce(s.taken_at, m.taken_at), coalesce(m.live_of, m.id), m.live_of IS NOT NULL`).all();
+    return rows.map((m) => {
+      const files = this.q(`
+        SELECT f.path, a.name AS album FROM files f LEFT JOIN albums a ON a.id = f.album_id
+        WHERE f.media_id = ? ORDER BY length(f.path), f.path`).all(m.id);
+      return {
+        ...m,
+        paths: files.map((f) => f.path),
+        albums: [...new Set(files.map((f) => f.album).filter(Boolean))].sort(),
+      };
+    });
+  }
+
   /** Mark short videos that sit next to a same-named photo as the motion part of a live photo. */
   linkLivePhotos(sourceId) {
     const rows = this.q(`
