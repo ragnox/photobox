@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photobox</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233b5bdb'/><path d='M7 22l6-7 4 5 3-3 5 5z' fill='white'/><circle cx='21' cy='11' r='3' fill='white'/></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu" data-icon="menu"></button>
+    <a class="brand" href="#">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M7 22l6-7 4 5 3-3 5 5z" fill="white"/><circle cx="21" cy="11" r="3" fill="white"/></svg>
+      <span>Photobox</span>
+    </a>
+    <div class="status" id="status" hidden>
+      <div class="status-text" id="status-text"></div>
+      <div class="status-bar"><div id="status-fill"></div></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn primary" id="add-btn"><span data-icon="plus"></span><span class="label">Add folder</span></button>
+  </header>
+
+  <aside class="sidebar" id="sidebar">
+    <nav class="nav" id="nav">
+      <a href="#" data-view="all"><span data-icon="image"></span>Photos</a>
+      <a href="#favorites" data-view="favorites"><span data-icon="heart"></span>Favorites</a>
+      <a href="#videos" data-view="videos"><span data-icon="play"></span>Videos</a>
+      <a href="#archive" data-view="archive"><span data-icon="archive"></span>Archive</a>
+    </nav>
+    <h3>Albums</h3>
+    <div class="albums" id="albums"><p class="muted small">No albums yet</p></div>
+    <h3>Sources</h3>
+    <div class="sources" id="sources"></div>
+    <div class="stats muted small" id="stats"></div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="view-title" id="view-title" hidden></div>
+    <div class="load-newer" id="load-newer" hidden><button class="btn" id="newest-btn">Back to newest</button></div>
+    <div class="timeline" id="timeline"></div>
+    <div class="sentinel" id="sentinel"></div>
+    <div class="empty" id="empty" hidden></div>
+  </main>
+  <nav class="scrubber" id="scrubber" aria-label="Jump to year"></nav>
+  <button class="new-pill" id="new-pill" hidden>New photos · refresh</button>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="drop-overlay" id="drop-overlay" hidden><div>Drop folders to add them</div></div>
+
+  <div class="lightbox" id="lightbox" hidden>
+    <div class="lb-stage" id="lb-stage"></div>
+    <div class="lb-top">
+      <button class="icon-btn" id="lb-close" aria-label="Close (Esc)" data-icon="x"></button>
+      <div class="lb-title"><div id="lb-name"></div><div class="muted small" id="lb-date"></div></div>
+      <button class="icon-btn lb-live" id="lb-live" aria-label="Play live photo" hidden>LIVE</button>
+      <button class="icon-btn" id="lb-fav" aria-label="Favorite (F)" data-icon="heart"></button>
+      <button class="icon-btn" id="lb-reveal" aria-label="Show in Finder" data-icon="folder"></button>
+      <button class="icon-btn" id="lb-info-btn" aria-label="Info (I)" data-icon="info"></button>
+    </div>
+    <button class="lb-nav prev" id="lb-prev" aria-label="Previous" data-icon="left"></button>
+    <button class="lb-nav next" id="lb-next" aria-label="Next" data-icon="right"></button>
+    <aside class="lb-info" id="lb-info"></aside>
+  </div>
+
+  <dialog class="dialog" id="add-dialog">
+    <form method="dialog" id="add-form">
+      <h2>Add photos</h2>
+      <p class="muted">Pick a folder of photos, or the folder where you extracted your Google Takeout zips. Photobox only reads it - nothing is moved or changed - and keeps watching it for new files.</p>
+      <div class="path-row">
+        <input id="add-path" placeholder="/Users/you/Downloads/Takeout" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn" id="browse-btn">Choose…</button>
+      </div>
+      <p class="error small" id="add-error"></p>
+      <details class="muted small">
+        <summary>Getting your photos out of Google</summary>
+        <ol>
+          <li>Go to takeout.google.com, deselect all, then select <b>Google Photos</b>.</li>
+          <li>Export as .zip (pick 50 GB parts to get fewer files) and download every part.</li>
+          <li>Extract all parts into one folder - mixed-up sidecars between parts are fine.</li>
+          <li>Add that folder here.</li>
+        </ol>
+      </details>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="add-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="add-submit">Add folder</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
