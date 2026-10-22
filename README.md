@@ -94,6 +94,11 @@ place it was taken. After that the folder is all you need: no Takeout, no Photob
   file first, so an interrupted export never leaves half a photo.
 - **Run it again** to copy only what's new. A file you delete from the export is copied again
   next time. To drop a photo for good, delete it from the source.
+- **Reorganize freely.** Move or rename files inside the export, or sort them into folders of
+  your own. The next export finds them by content and updates `photobox-export.json` instead of
+  copying them again. It only reads files with the size of a photo that's still missing, so
+  other files you keep there cost nothing. Originals in a Photobox source folder inside the
+  export (a Takeout unpacked there, say) don't count as exported.
 - **`photobox-export.json`** in the folder records each file's albums, favorite flag,
   description, people, place and exact time. It's also how the next run knows what's already
   there. If it gets lost, files that are already in place are recognized by their content.
@@ -102,9 +107,6 @@ place it was taken. After that the folder is all you need: no Takeout, no Photob
   and dates come back as they were, even for files you've moved or renamed inside it. A photo
   in several albums is one file there, and it's listed in all of them. A re-export into a
   watched folder updates what Photobox shows.
-
-Moving or renaming files inside the export is fine for Photobox, but the next `photobox export`
-doesn't know where they went, so it copies them again to their original place.
 
 `--dry-run` lists what would be copied. Folders given to `export` are added and scanned first.
 Without folders it rescans the library's folders, or, if Photobox is running, exports that

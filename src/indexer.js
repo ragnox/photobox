@@ -33,7 +33,7 @@ export async function quickHash(file, size) {
   return hash.digest('hex');
 }
 
-async function* walk(dir) {
+export async function* walk(dir) {
   let entries;
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });

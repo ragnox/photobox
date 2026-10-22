@@ -14,15 +14,15 @@ import { exportLibrary, safeStem, MANIFEST } from '../src/export.js';
 async function setup(t) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-export-'));
   const library = new Library(path.join(tmp, 'library.db'));
-  const source = library.addSource(path.join(tmp, 'src'));
   t.after(async () => {
     library.close();
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
-  /** Put a file in the source folder and index it the way the indexer would. */
-  async function add(file, { content = file, taken, local, filename, album, liveOf, favorite, people, description, lat, lon } = {}) {
-    const full = path.join(tmp, 'src', file);
+  /** Put a file in a source folder (tmp/src unless `root` says otherwise) and index it the way the indexer would. */
+  async function add(file, { root = path.join(tmp, 'src'), content = file, taken, local, filename, album, liveOf, favorite, people, description, lat, lon } = {}) {
+    const source = library.addSource(root);
+    const full = path.join(root, file);
     await fs.mkdir(path.dirname(full), { recursive: true });
     await fs.writeFile(full, content);
     const stat = await fs.stat(full);
@@ -154,6 +154,36 @@ test('never overwrites, and running again copies only what is new or missing', a
   assert.deepEqual(await files(), ['2021/01/a.jpg', '2021/01/b (2).jpg', '2021/01/b.jpg', '2021/01/c.jpg', MANIFEST]);
 });
 
+test('files moved or renamed inside the export are not copied again', async (t) => {
+  const { library, add, dest, files, manifest } = await setup(t);
+  const opts = { taken: '2021-01-10T10:00:00Z', local: '2021-01-10 11:00:00' };
+  await add('Ski/a.jpg', { ...opts, album: 'Ski' });
+  await add('b.jpg', opts);
+  await add('c.jpg', opts);
+  await exportLibrary(library, dest);
+
+  await fs.mkdir(path.join(dest, 'Best of'));
+  await fs.rename(path.join(dest, '2021/01/a.jpg'), path.join(dest, 'Best of/first run.jpg'));
+  await fs.rename(path.join(dest, '2021/01/b.jpg'), path.join(dest, '2021/01/b renamed.jpg'));
+  await fs.rm(path.join(dest, '2021/01/c.jpg'));
+  // Same size as c.jpg, different content: not mistaken for it.
+  await fs.writeFile(path.join(dest, 'Best of/x.jpg'), 'c.jpX');
+
+  const again = await exportLibrary(library, dest);
+  assert.deepEqual([again.copied, again.present], [1, 2], 'only the deleted one is copied again');
+  assert.deepEqual(await files(), ['2021/01/b renamed.jpg', '2021/01/c.jpg', 'Best of/first run.jpg', 'Best of/x.jpg', MANIFEST]);
+  const m = await manifest();
+  assert.deepEqual(Object.keys(m.items), ['2021/01/b renamed.jpg', '2021/01/c.jpg', 'Best of/first run.jpg']);
+  assert.deepEqual(m.albums, { Ski: ['Best of/first run.jpg'] });
+});
+
+test('a Takeout unpacked inside the export folder is copied, not taken for the export', async (t) => {
+  const { library, add, dest, files } = await setup(t);
+  await add('Photos from 2018/IMG_1.jpg', { root: path.join(dest, 'Takeout'), taken: '2018-05-01T10:00:00Z', local: '2018-05-01 12:00:00' });
+  assert.equal((await exportLibrary(library, dest)).copied, 1);
+  assert.deepEqual(await files(), ['2018/05/IMG_1.jpg', 'Takeout/Photos from 2018/IMG_1.jpg', MANIFEST]);
+});
+
 test('skips sources that are gone or changed since the scan; dry run writes nothing', async (t) => {
   const { library, add, dest, files } = await setup(t);
   const opts = { taken: '2022-03-01T10:00:00Z', local: '2022-03-01 11:00:00' };
@@ -256,4 +286,8 @@ test('files moved or renamed inside an export keep their details', async (t) => 
   assert.equal(moved.favorite, 1);
   assert.equal(moved.local_time, '2020-01-05 11:00:00');
   assert.equal((await back.indexer.scanSource(back.source)).added, 0);
+
+  // Exporting the re-indexed library into its own folder doesn't copy the moved photo back either.
+  const again = await exportLibrary(back.library, dest);
+  assert.deepEqual([again.copied, again.present], [0, 1]);
 });

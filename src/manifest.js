@@ -67,7 +67,7 @@ export class ManifestIndex {
 
   covers(file) {
     const rel = path.relative(this.root, file);
-    return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel);
+    return Boolean(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
   }
 
   find(file) {

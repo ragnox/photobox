@@ -6,8 +6,8 @@
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
-import { quickHash } from './indexer.js';
-import { MEDIA_EXT } from './media.js';
+import { quickHash, walk } from './indexer.js';
+import { MEDIA_EXT, mediaKind } from './media.js';
 import { MANIFEST, readManifest } from './manifest.js';
 
 export { MANIFEST };
@@ -27,6 +27,10 @@ async function statOrNull(file) {
 }
 
 const full = (dest, rel) => path.join(dest, ...rel.split('/'));
+const isInside = (file, dir) => {
+  const rel = path.relative(dir, file);
+  return Boolean(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+};
 const nameKey = (rel) => rel.normalize('NFC').toLowerCase();
 
 /** File name stem to export under: the photo's real name, made safe for any drive. */
@@ -83,6 +87,31 @@ async function readableSource(m) {
 }
 
 /**
+ * Files in <dest> that the manifest doesn't list but that hold an item still to
+ * export: moved or renamed since the last export. Returns hash -> rel. Only files
+ * with the size of such an item are read, so unrelated files cost a stat at most.
+ * Source folders inside <dest> (a Takeout unpacked there) hold originals, not
+ * exported copies, so they are left out.
+ */
+async function findMoved(dest, items, pending, sources) {
+  const found = new Map();
+  if (!pending.length) return found;
+  const wanted = new Set(pending.map((m) => m.hash));
+  const sizes = pending.some((m) => m.bytes == null) ? null : new Set(pending.map((m) => m.bytes));
+  const listed = new Set(Object.keys(items).map((rel) => rel.normalize('NFC')));
+  const originals = sources.filter((dir) => isInside(dir, dest));
+  for await (const file of walk(dest)) {
+    const rel = path.relative(dest, file).split(path.sep).join('/');
+    if (!mediaKind(file) || listed.has(rel.normalize('NFC')) || originals.some((dir) => isInside(file, dir))) continue;
+    const stat = await statOrNull(file);
+    if (!stat || (sizes && !sizes.has(stat.size))) continue;
+    const hash = await quickHash(file, stat.size);
+    if (wanted.has(hash) && !found.has(hash)) found.set(hash, rel);
+  }
+  return found;
+}
+
+/**
  * A name in <dest>/<dir> that isn't taken: "IMG_1.jpg", "IMG_1 (2).jpg", …
  * A file that is already there with the same content (an earlier export whose
  * manifest got lost) is reused instead of copied again.
@@ -124,7 +153,7 @@ export async function exportLibrary(library, dest, { dryRun = false, onProgress 
   const destStat = await statOrNull(dest);
   if (destStat && !destStat.isDirectory()) throw new Error(`Not a folder: ${dest}`);
 
-  // Earlier exports, minus files that have since been deleted from <dest> (those get copied again).
+  // Earlier exports, minus files that have since been moved or deleted from <dest>.
   const items = {};
   const exported = new Map();
   for (const [rel, entry] of Object.entries((await readManifest(dest))?.items ?? {})) {
@@ -133,12 +162,15 @@ export async function exportLibrary(library, dest, { dryRun = false, onProgress 
       if (!exported.has(entry.hash)) exported.set(entry.hash, rel);
     }
   }
-  const reserved = new Set(Object.keys(items).map(nameKey));
+  const all = library.exportItems();
+  const pending = all.filter((m) => !exported.has(m.hash));
+  const sources = library.sources().map((s) => s.path);
+  for (const [hash, rel] of await findMoved(dest, items, pending, sources)) exported.set(hash, rel);
+  const reserved = new Set([...Object.keys(items), ...exported.values()].map(nameKey));
   const placed = new Map(); // media id -> rel, so a live photo's clip can sit next to its still
   const planned = [];
   const result = { total: 0, copied: 0, present: 0, skipped: [], planned };
 
-  const all = library.exportItems();
   for (const m of all) {
     result.total++;
     if (result.total % 100 === 0) onProgress({ phase: 'checking', done: result.total, total: all.length });
