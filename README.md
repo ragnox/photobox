@@ -97,6 +97,14 @@ place it was taken. After that the folder is all you need: no Takeout, no Photob
 - **`photobox-export.json`** in the folder records each file's albums, favorite flag,
   description, people, place and exact time. It's also how the next run knows what's already
   there. If it gets lost, files that are already in place are recognized by their content.
+- **Add it back any time.** Add the exported folder (or a copy of it, on another machine) to
+  Photobox and it reads `photobox-export.json`: albums, favorites, descriptions, people, places
+  and dates come back as they were, even for files you've moved or renamed inside it. A photo
+  in several albums is one file there, and it's listed in all of them. A re-export into a
+  watched folder updates what Photobox shows.
+
+Moving or renaming files inside the export is fine for Photobox, but the next `photobox export`
+doesn't know where they went, so it copies them again to their original place.
 
 `--dry-run` lists what would be copied. Folders given to `export` are added and scanned first.
 Without folders it rescans the library's folders, or, if Photobox is running, exports that
@@ -140,6 +148,7 @@ src/dates.js             timestamp parsing, filename dates, GPS → time zone
 src/thumbs.js            thumbnails/previews (sharp, sips and ffmpeg fallbacks)
 src/db.js                SQLite schema + queries (node:sqlite, no native build)
 src/export.js            copy the library into <dest>/YYYY/MM/ + photobox-export.json
+src/manifest.js          reading photobox-export.json, for the export and the indexer
 src/watcher.js           chokidar → debounced rescans of the affected folders
 src/server.js            local HTTP API, localhost only
 public/                  the app: justified timeline, year scrubber, albums, viewer

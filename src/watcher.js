@@ -3,6 +3,7 @@ import path from 'node:path';
 import { watch } from 'chokidar';
 import { mediaKind, isHidden } from './media.js';
 import { takeoutFolderKey } from './takeout/sidecar.js';
+import { MANIFEST } from './manifest.js';
 
 const DEBOUNCE_MS = 1000;
 
@@ -71,8 +72,12 @@ export class SourceWatcher {
     if (batch.removed.size && fs.existsSync(source.path)) this.indexer.removePaths([...batch.removed]);
     if (!batch.changed.size) return;
     const dirs = [...new Set([...batch.changed].map((f) => path.dirname(f)))];
-    // Inside a Takeout export a photo's sidecar can sit in another zip part, so look at everything.
-    if (dirs.some((d) => takeoutFolderKey(d) !== d)) this.indexer.scanSource(source);
-    else this.indexer.scanFolders(source, dirs);
+    // Inside a Takeout export a photo's sidecar can sit in another zip part, and an export
+    // manifest describes files in every folder below it, so look at everything.
+    if (dirs.some((d) => takeoutFolderKey(d) !== d) || [...batch.changed].some((f) => path.basename(f) === MANIFEST)) {
+      this.indexer.scanSource(source);
+    } else {
+      this.indexer.scanFolders(source, dirs);
+    }
   }
 }

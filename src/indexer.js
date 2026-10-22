@@ -7,6 +7,7 @@ import { readImageMeta, readVideoMeta } from './metadata.js';
 import { makeThumbnail, imageSize, cachePath } from './thumbs.js';
 import { formatLocal, localToInstant, dateFromFilename, zoneAt } from './dates.js';
 import { SidecarIndex, classifyJson, albumTitle, sidecarMeta, takeoutFolderKey } from './takeout/sidecar.js';
+import { MANIFEST, ManifestIndex, readManifest, manifestMeta } from './manifest.js';
 
 const SKIP_DIRS = new Set(['node_modules', '@eaDir', '#recycle', '$RECYCLE.BIN', 'System Volume Information']);
 // How much we trust each date source; better information replaces worse.
@@ -67,12 +68,14 @@ async function readJson(file) {
 }
 
 /**
- * Sidecars and album names for the folders of one source. Folders are keyed so
- * that "takeout-001/Takeout/Google Photos/Trip" and "takeout-002/…/Trip" merge.
+ * Sidecars and album names for the folders of one source, plus the manifests of
+ * any `photobox export` folders in it. Folders are keyed so that
+ * "takeout-001/Takeout/Google Photos/Trip" and "takeout-002/…/Trip" merge.
  */
 class FolderContext {
   constructor() {
     this.folders = new Map();
+    this.manifests = new Map();
   }
 
   folder(dir) {
@@ -82,6 +85,7 @@ class FolderContext {
   }
 
   async addJson(file) {
+    if (path.basename(file) === MANIFEST) return this.addManifest(path.dirname(file));
     const data = await readJson(file);
     const type = classifyJson(data);
     const folder = this.folder(path.dirname(file));
@@ -89,9 +93,27 @@ class FolderContext {
     else if (type === 'album') folder.album = albumTitle(data) ?? folder.album;
   }
 
+  async addManifest(dir) {
+    if (this.manifests.has(dir)) return;
+    const data = await readManifest(dir);
+    this.manifests.set(dir, data ? new ManifestIndex(dir, data) : null);
+  }
+
+  /** Rescans of single folders (from the watcher) need the manifest of the export they're in, further up. */
+  async addManifestsAbove(dir, root) {
+    for (let d = dir; ; d = path.dirname(d)) {
+      await this.addManifest(d);
+      if (d === root || path.dirname(d) === d) break;
+    }
+  }
+
   lookup(file) {
     const folder = this.folder(path.dirname(file));
-    return { sidecar: folder.sidecars.find(path.basename(file)), album: folder.album };
+    let manifest = null;
+    for (const m of this.manifests.values()) {
+      if (m?.covers(file) && (!manifest || m.root.length > manifest.root.length)) manifest = m;
+    }
+    return { sidecar: folder.sidecars.find(path.basename(file)), album: folder.album, manifest };
   }
 }
 
@@ -168,6 +190,7 @@ export class Indexer extends EventEmitter {
     const context = new FolderContext();
     const mediaFiles = [];
     const roots = onlyDirs ?? [source.path];
+    if (onlyDirs) for (const dir of onlyDirs) await context.addManifestsAbove(dir, source.path);
     for (const root of roots) {
       const files = onlyDirs ? await this.#listDir(root) : walk(root);
       for await (const file of files) {
@@ -222,21 +245,29 @@ export class Indexer extends EventEmitter {
   /** Index one file. Returns true when it created a new media item. */
   async #indexFile(source, file, context) {
     const stat = await fs.stat(file);
-    const { sidecar, album } = context.lookup(file);
+    const { sidecar, album, manifest } = context.lookup(file);
     const existing = this.library.fileByPath(file);
-    const sidecarPath = sidecar?.entry.path ?? null;
+    // Without a Takeout sidecar, an export manifest entry plays its part. Files moved or renamed
+    // inside the export are found by content; an unchanged file still has its indexed content.
+    let listed = sidecar || !manifest ? null : manifest.find(file);
+    if (manifest && !sidecar && !listed && existing) listed = manifest.byHash.get(this.library.media(existing.media_id)?.hash) ?? null;
+    let sidecarPath = sidecar?.entry.path ?? listed?.key ?? null;
     if (existing && existing.size === stat.size && existing.mtime === Math.floor(stat.mtimeMs) && existing.sidecar === sidecarPath) {
       return false;
     }
 
-    const sc = sidecar ? sidecarMeta(sidecar.entry.data) : null;
+    const hash = await quickHash(file, stat.size);
+    if (manifest && !sidecar && !listed) {
+      listed = manifest.byHash.get(hash) ?? null;
+      sidecarPath = listed?.key ?? null;
+    }
+    const sc = sidecar ? sidecarMeta(sidecar.entry.data) : listed ? manifestMeta(listed.entry) : null;
     if (sc?.trashed) {
       if (existing) await this.#deleteThumbs(this.library.removeFiles([file]));
       return false;
     }
 
     const kind = mediaKind(file);
-    const hash = await quickHash(file, stat.size);
     let media = this.library.mediaByHash(hash);
     if (!media && this.inflight.has(hash)) {
       await this.inflight.get(hash).catch(() => {});
@@ -253,14 +284,15 @@ export class Indexer extends EventEmitter {
         this.inflight.delete(hash);
       }
       created = true;
-    } else if (sc && (DATE_RANK.takeout > DATE_RANK[media.date_source] || !this.library.hasSidecar(media.id))) {
-      // Same photo seen before without its sidecar (e.g. split zip parts): upgrade.
-      this.library.updateMediaMeta(media.id, await this.#extract(file, kind, stat, sc, sidecar.method));
+    } else if (sc && (DATE_RANK[sc.fromManifest ? sc.dateSource : 'takeout'] > DATE_RANK[media.date_source] || !this.library.hasSidecar(media.id) ||
+        (sc.fromManifest && existing?.sidecar !== sidecarPath))) {
+      // Same photo seen before without its sidecar (e.g. split zip parts), or its manifest entry changed: upgrade.
+      this.library.updateMediaMeta(media.id, await this.#extract(file, kind, stat, sc, sidecar?.method));
     }
 
-    const albumId = album ? this.library.albumId(album) : null;
+    const albumIds = [...new Set([album, ...(sc?.albums ?? [])].filter(Boolean))].map((name) => this.library.albumId(name));
     this.library.upsertFile({
-      path: file, sourceId: source.id, mediaId: media.id, albumId,
+      path: file, sourceId: source.id, mediaId: media.id, albumIds,
       size: stat.size, mtime: Math.floor(stat.mtimeMs), sidecar: sidecarPath,
     });
     // The file's content changed: the media it used to point at may be orphaned now.
@@ -280,7 +312,9 @@ export class Indexer extends EventEmitter {
     const wallClock = (ms) => formatLocal(ms, zone);
 
     let date;
-    if (info.date?.instant != null) date = { takenAt: info.date.instant, localTime: info.date.local ?? wallClock(info.date.instant), dateSource: 'exif' };
+    // An export manifest holds the date as it was worked out when the library was exported.
+    if (sc?.localTime) date = { takenAt: sc.takenAt, localTime: sc.localTime, dateSource: sc.dateSource };
+    else if (info.date?.instant != null) date = { takenAt: info.date.instant, localTime: info.date.local ?? wallClock(info.date.instant), dateSource: 'exif' };
     else if (sc?.takenAt) date = { takenAt: sc.takenAt, localTime: info.date?.local ?? wallClock(sc.takenAt), dateSource: 'takeout' };
     else if (info.date) date = { takenAt: localToInstant(info.date.local), localTime: info.date.local, dateSource: 'exif' };
     else if (fromName) date = { takenAt: localToInstant(fromName), localTime: fromName, dateSource: 'filename' };
@@ -291,7 +325,7 @@ export class Indexer extends EventEmitter {
     if (kind === 'image' && !width) ({ width, height } = await imageSize(file));
 
     // Disk names can be truncated or sanitized; the sidecar title is the real name.
-    const useTitle = sc?.title && (sidecarMethod === 'title' || sidecarMethod === 'truncated');
+    const useTitle = sc?.title && (sc.fromManifest || sidecarMethod === 'title' || sidecarMethod === 'truncated');
     return {
       ...date,
       filename: useTitle ? sc.title : name,
@@ -300,7 +334,7 @@ export class Indexer extends EventEmitter {
       duration: info.duration ?? null,
       lat,
       lon,
-      camera: info.camera ?? null,
+      camera: info.camera ?? sc?.camera ?? null,
       description: sc?.description ?? null,
       people: sc?.people ?? [],
       favorite: sc?.favorite ?? false,

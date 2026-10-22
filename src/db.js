@@ -50,15 +50,23 @@ CREATE TABLE IF NOT EXISTS files (
   path TEXT NOT NULL UNIQUE,
   source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
   media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-  album_id INTEGER REFERENCES albums(id) ON DELETE SET NULL,
   size INTEGER NOT NULL,
   mtime INTEGER NOT NULL,
   sidecar TEXT
 );
 CREATE INDEX IF NOT EXISTS files_media ON files(media_id);
 CREATE INDEX IF NOT EXISTS files_source ON files(source_id);
-CREATE INDEX IF NOT EXISTS files_album ON files(album_id);
+
+-- A Takeout file sits in one album folder; an exported file can be listed in several albums.
+CREATE TABLE IF NOT EXISTS file_albums (
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+  PRIMARY KEY (file_id, album_id)
+);
+CREATE INDEX IF NOT EXISTS file_albums_album ON file_albums(album_id);
 `;
+
+const IN_ALBUM = 'SELECT f.media_id FROM files f JOIN file_albums fa ON fa.file_id = f.id WHERE fa.album_id = ?';
 
 const TIMELINE_COLUMNS = `
   m.id, substr(m.hash, 1, 10) AS v, m.kind, m.taken_at, m.local_time, m.thumb_w, m.thumb_h, m.width, m.height, m.duration, m.favorite,
@@ -69,6 +77,17 @@ export class Library {
     this.db = new DatabaseSync(dbPath);
     this.db.exec(SCHEMA);
     this.stmts = new Map();
+    this.#migrate();
+  }
+
+  /** Libraries from before file_albums kept a single album_id on each file. */
+  #migrate() {
+    if (!this.db.prepare('PRAGMA table_info(files)').all().some((c) => c.name === 'album_id')) return;
+    this.tx(() => {
+      this.db.exec('INSERT OR IGNORE INTO file_albums (file_id, album_id) SELECT id, album_id FROM files WHERE album_id IS NOT NULL');
+      this.db.exec('DROP INDEX IF EXISTS files_album');
+      this.db.exec('ALTER TABLE files DROP COLUMN album_id');
+    });
   }
 
   q(sql) {
@@ -132,14 +151,19 @@ export class Library {
     return this.q('SELECT path FROM files WHERE source_id = ?').all(sourceId).map((r) => r.path);
   }
 
-  upsertFile({ path, sourceId, mediaId, albumId, size, mtime, sidecar }) {
-    this.q(`
-      INSERT INTO files (path, source_id, media_id, album_id, size, mtime, sidecar)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (path) DO UPDATE SET
-        source_id = excluded.source_id, media_id = excluded.media_id, album_id = excluded.album_id,
-        size = excluded.size, mtime = excluded.mtime, sidecar = excluded.sidecar`)
-      .run(path, sourceId, mediaId, albumId ?? null, size, mtime, sidecar ?? null);
+  upsertFile({ path, sourceId, mediaId, albumIds = [], size, mtime, sidecar }) {
+    this.tx(() => {
+      this.q(`
+        INSERT INTO files (path, source_id, media_id, size, mtime, sidecar)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (path) DO UPDATE SET
+          source_id = excluded.source_id, media_id = excluded.media_id,
+          size = excluded.size, mtime = excluded.mtime, sidecar = excluded.sidecar`)
+        .run(path, sourceId, mediaId, size, mtime, sidecar ?? null);
+      const { id } = this.q('SELECT id FROM files WHERE path = ?').get(path);
+      this.q('DELETE FROM file_albums WHERE file_id = ?').run(id);
+      for (const albumId of albumIds) this.q('INSERT OR IGNORE INTO file_albums (file_id, album_id) VALUES (?, ?)').run(id, albumId);
+    });
   }
 
   /** Delete file rows; returns hashes of media that no longer have any file. */
@@ -153,7 +177,7 @@ export class Library {
   pruneOrphans() {
     const orphans = this.q('SELECT id, hash FROM media WHERE id NOT IN (SELECT media_id FROM files)').all();
     for (const { id } of orphans) this.q('DELETE FROM media WHERE id = ?').run(id);
-    this.q('DELETE FROM albums WHERE id NOT IN (SELECT album_id FROM files WHERE album_id IS NOT NULL)').run();
+    this.q('DELETE FROM albums WHERE id NOT IN (SELECT album_id FROM file_albums)').run();
     return orphans.map((o) => o.hash);
   }
 
@@ -203,17 +227,21 @@ export class Library {
   mediaDetails(id) {
     const m = this.media(id);
     if (!m) return null;
-    const files = this.q(`
-      SELECT f.path, f.size, f.sidecar, a.name AS album FROM files f
-      LEFT JOIN albums a ON a.id = f.album_id WHERE f.media_id = ? ORDER BY f.path`).all(id);
+    const files = this.q('SELECT path, size, sidecar FROM files WHERE media_id = ? ORDER BY path').all(id);
     const live = this.q('SELECT id FROM media WHERE live_of = ?').get(id);
     return {
       ...m,
       people: m.people ? JSON.parse(m.people) : [],
       files,
-      albums: [...new Set(files.map((f) => f.album).filter(Boolean))],
+      albums: this.albumNames(id),
       live_video: live?.id ?? null,
     };
+  }
+
+  albumNames(mediaId) {
+    return this.q(`
+      SELECT DISTINCT a.name FROM albums a JOIN file_albums fa ON fa.album_id = a.id JOIN files f ON f.id = fa.file_id
+      WHERE f.media_id = ? ORDER BY a.name`).all(mediaId).map((r) => r.name);
   }
 
   primaryPath(id) {
@@ -228,16 +256,11 @@ export class Library {
     const rows = this.q(`
       SELECT m.* FROM media m LEFT JOIN media s ON s.id = m.live_of
       ORDER BY coalesce(s.taken_at, m.taken_at), coalesce(m.live_of, m.id), m.live_of IS NOT NULL`).all();
-    return rows.map((m) => {
-      const files = this.q(`
-        SELECT f.path, a.name AS album FROM files f LEFT JOIN albums a ON a.id = f.album_id
-        WHERE f.media_id = ? ORDER BY length(f.path), f.path`).all(m.id);
-      return {
-        ...m,
-        paths: files.map((f) => f.path),
-        albums: [...new Set(files.map((f) => f.album).filter(Boolean))].sort(),
-      };
-    });
+    return rows.map((m) => ({
+      ...m,
+      paths: this.q('SELECT path FROM files WHERE media_id = ? ORDER BY length(path), path').all(m.id).map((f) => f.path),
+      albums: this.albumNames(m.id),
+    }));
   }
 
   /** Mark short videos that sit next to a same-named photo as the motion part of a live photo. */
@@ -272,9 +295,9 @@ export class Library {
   albums() {
     return this.q(`
       SELECT a.id, a.name, count(DISTINCT f.media_id) AS count,
-        (SELECT f2.media_id FROM files f2 JOIN media m ON m.id = f2.media_id
-          WHERE f2.album_id = a.id AND m.live_of IS NULL ORDER BY m.taken_at DESC LIMIT 1) AS cover
-      FROM albums a JOIN files f ON f.album_id = a.id
+        (SELECT f2.media_id FROM file_albums fa2 JOIN files f2 ON f2.id = fa2.file_id JOIN media m ON m.id = f2.media_id
+          WHERE fa2.album_id = a.id AND m.live_of IS NULL ORDER BY m.taken_at DESC LIMIT 1) AS cover
+      FROM albums a JOIN file_albums fa ON fa.album_id = a.id JOIN files f ON f.id = fa.file_id
       GROUP BY a.id ORDER BY a.name COLLATE NOCASE`).all();
   }
 
@@ -290,7 +313,7 @@ export class Library {
     else where.push('m.archived = 0');
     if (view === 'videos') where.push("m.kind = 'video'");
     if (albumId) {
-      where.push('m.id IN (SELECT media_id FROM files WHERE album_id = ?)');
+      where.push(`m.id IN (${IN_ALBUM})`);
       params.push(albumId);
     }
     const older = direction === 'older';
@@ -317,7 +340,7 @@ export class Library {
     if (view === 'favorites') where.push('favorite = 1');
     if (view === 'videos') where.push("kind = 'video'");
     if (albumId) {
-      where.push('id IN (SELECT media_id FROM files WHERE album_id = ?)');
+      where.push(`id IN (${IN_ALBUM})`);
       params.push(albumId);
     }
     return this.db.prepare(`

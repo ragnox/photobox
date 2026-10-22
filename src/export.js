@@ -8,8 +8,9 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { quickHash } from './indexer.js';
 import { MEDIA_EXT } from './media.js';
+import { MANIFEST, readManifest } from './manifest.js';
 
-export const MANIFEST = 'photobox-export.json';
+export { MANIFEST };
 
 // Characters that Windows, exFAT or FAT32 drives can't store in a file name.
 const UNSAFE = /[<>:"/\\|?*\u0000-\u001f]/g;
@@ -35,15 +36,6 @@ export function safeStem(filename) {
   stem = stem.normalize('NFC').replace(UNSAFE, '_').replace(/^[. ]+|[. ]+$/g, '');
   while (Buffer.byteLength(stem) > MAX_STEM_BYTES) stem = [...stem].slice(0, -1).join('');
   return stem || 'untitled';
-}
-
-async function readManifest(dest) {
-  try {
-    const data = JSON.parse(await fs.readFile(path.join(dest, MANIFEST), 'utf8'));
-    return data?.version === 1 && data.items && typeof data.items === 'object' ? data : null;
-  } catch {
-    return null;
-  }
 }
 
 async function writeManifest(dest, items) {
