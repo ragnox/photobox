@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS file_albums (
   PRIMARY KEY (file_id, album_id)
 );
 CREATE INDEX IF NOT EXISTS file_albums_album ON file_albums(album_id);
+
+-- Phones and other devices paired for network access. Only a hash of each token is kept.
+CREATE TABLE IF NOT EXISTS devices (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER
+);
 `;
 
 const IN_ALBUM = 'SELECT f.media_id FROM files f JOIN file_albums fa ON fa.file_id = f.id WHERE fa.album_id = ?';
@@ -346,6 +355,30 @@ export class Library {
     return this.db.prepare(`
       SELECT substr(local_time, 1, 7) AS month, count(*) AS count, max(taken_at) AS newest
       FROM media WHERE ${where.join(' AND ')} GROUP BY month ORDER BY month DESC`).all(...params);
+  }
+
+  // --- devices -------------------------------------------------------------
+
+  addDevice(name, tokenHash) {
+    const { lastInsertRowid } = this.q('INSERT INTO devices (name, token_hash, created_at) VALUES (?, ?, ?)')
+      .run(name, tokenHash, Date.now());
+    return this.q('SELECT id, name, created_at, last_seen_at FROM devices WHERE id = ?').get(Number(lastInsertRowid));
+  }
+
+  deviceByTokenHash(tokenHash) {
+    return this.q('SELECT id, name, created_at, last_seen_at FROM devices WHERE token_hash = ?').get(tokenHash);
+  }
+
+  devices() {
+    return this.q('SELECT id, name, created_at, last_seen_at FROM devices ORDER BY created_at').all();
+  }
+
+  touchDevice(id) {
+    this.q('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(Date.now(), id);
+  }
+
+  removeDevice(id) {
+    return this.q('DELETE FROM devices WHERE id = ?').run(id).changes > 0;
   }
 
   stats() {

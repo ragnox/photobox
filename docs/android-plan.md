@@ -224,6 +224,12 @@ with proof, browse, and free space safely.
 | --- | --- | --- |
 | **0. Today, no new code** | Syncthing-Fork on the phone with safe computer-side settings, Photobox library, daily export, off-site restic backup, Takeout imported, Google Photos backup turned off | A photo taken on the phone is in `~/Photos/YYYY/MM` the next morning, and Google holds no copy |
 | **1. Library on the phone** | A1–A3, A8: authenticated LAN/VPN access and the installable web app | The paired phone scrolls the full timeline over Wi-Fi and WireGuard, and an unpaired device gets 401 on every route |
+
+**Phase 1 status (October 2026):** `photobox serve --listen` and pairing by QR code are built. So are
+device tokens stored as hashes, the host-only rules, Photobox's own CA with automatic renewal of the
+server certificate, and the installable web app (manifest, service worker, icons). All of it is
+covered by `test/remote.test.js` and was checked end to end with curl over Wi-Fi. Still open: trying
+it on a real phone over Wi-Fi and WireGuard, and turning on `--listen` from the desktop app.
 | **2. Backup with proof** | A4–A6, B1–B5, B7: the Android backup app and the scheduled export | A new photo reaches the host within minutes on Wi-Fi. A 10 GB first backup survives airplane mode, reboots and the daily limit. Host and phone SHA-256 match for every item, GPS included. "Free up space" offers only confirmed items |
 | **3. Browse and organize natively** | B6, A7: native timeline and albums, favorites and albums edited from the phone, XMP sidecars | Favorites set on the phone show up in `photobox-export.json` and the XMP files, and survive an export/re-import round trip |
 | **4. Smart features, privately** | Search by content and face grouping with open models running on the host, a map on OpenStreetMap, offline place names | Search for "beach" returns beach photos without any network call leaving your network |

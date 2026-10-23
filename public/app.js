@@ -26,6 +26,8 @@ const ICONS = {
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   hdd: '<path d="M22 12H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11zM6 16h.01M10 16h.01"/>',
   live: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7" stroke-dasharray="2 2.4"/>',
+  phone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
 };
 const icon = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 for (const el of document.querySelectorAll('[data-icon]')) el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon));
@@ -39,6 +41,8 @@ async function api(path, { method = 'GET', body } = {}) {
     init.body = JSON.stringify(body ?? {});
   }
   const res = await fetch(path, init);
+  // A phone whose pairing was removed on the computer: back to the pairing page.
+  if (res.status === 401 && state.remote) location.href = '/pair.html';
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -436,7 +440,9 @@ function updateChrome() {
   const isEmpty = !state.items.length && !state.hasOlder && !state.loading;
   empty.hidden = !isEmpty;
   if (!isEmpty) return;
-  if (!state.sources.length) {
+  if (!state.sources.length && state.remote) {
+    empty.innerHTML = `<div class="art">${icon('image')}</div><h2>No photos yet</h2><p>Add folders in Photobox on your computer.</p>`;
+  } else if (!state.sources.length) {
     empty.innerHTML = `
       <div class="art">${icon('image')}</div>
       <h2>Bring your photos home</h2>
@@ -465,6 +471,10 @@ async function poll() {
     const s = await api('/api/status');
     const wasRunning = state.running;
     state.platform = s.platform;
+    if (state.remote !== s.remote) document.documentElement.classList.toggle('remote', s.remote);
+    state.remote = s.remote;
+    state.network = s.network;
+    $('#devices-section').hidden = s.remote;
     $('#lb-reveal').setAttribute('aria-label', revealLabel());
     state.sources = s.sources;
     state.running = s.indexing.running;
@@ -549,6 +559,101 @@ $('#add-form').addEventListener('submit', async (e) => {
     $('#add-error').textContent = err.message;
   }
 });
+
+// --- connect a phone (on the computer running Photobox) -----------------------
+
+const pairDialog = $('#pair-dialog');
+const fmtAgo = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+const ago = (ms) => {
+  const minutes = Math.round((ms - Date.now()) / 60000);
+  if (Math.abs(minutes) < 60) return fmtAgo.format(minutes, 'minute');
+  if (Math.abs(minutes) < 1440) return fmtAgo.format(Math.round(minutes / 60), 'hour');
+  return fmtAgo.format(Math.round(minutes / 1440), 'day');
+};
+let pairTimer = null;
+
+async function loadDevices() {
+  const devices = await api('/api/devices').catch(() => []);
+  $('#devices').innerHTML = devices.length
+    ? devices.map((d) => `
+        <div class="device">
+          ${icon('phone')}<span class="name">${esc(d.name)}</span>
+          <span class="muted small">${d.last_seen_at ? `seen ${esc(ago(d.last_seen_at))}` : 'not used yet'}</span>
+          <button class="icon-btn" data-unpair="${d.id}" aria-label="Disconnect ${esc(d.name)}">${icon('x')}</button>
+        </div>`).join('')
+    : '<p class="muted small" style="margin:4px 12px">No phones connected</p>';
+  return devices;
+}
+
+$('#devices').addEventListener('click', async (e) => {
+  const id = e.target.closest('[data-unpair]')?.dataset.unpair;
+  if (!id || !confirm('Disconnect this device? It will need a new pairing code to see your photos again.')) return;
+  await api(`/api/devices/${id}`, { method: 'DELETE' });
+  loadDevices();
+});
+
+function renderPairing({ links, fingerprint, expiresAt }) {
+  const body = $('#pair-body');
+  if (!links.length) {
+    body.innerHTML = '<p>This computer has no network address right now. Connect it to Wi-Fi or your VPN, then try again.</p>';
+    return;
+  }
+  body.innerHTML = `
+    <ol class="steps">
+      <li>On your phone, open the camera and scan this code. The phone needs to be on the same Wi-Fi or VPN.</li>
+      ${fingerprint ? '<li>The first time, the browser warns that the connection is not private, because Photobox uses its own certificate. Tap <b>Advanced</b>, then <b>Proceed</b>.</li>' : ''}
+      <li>Name the phone and tap <b>Connect</b>.</li>
+    </ol>
+    <div class="qr" id="pair-qr">${links[0].qr}</div>
+    ${links.length > 1 ? `<select id="pair-address" aria-label="Address">${links.map((l, i) => `<option value="${i}">${esc(new URL(l.url).host)}</option>`).join('')}</select>` : ''}
+    <p class="muted small mono" id="pair-url">${esc(links[0].url)}</p>
+    <p class="muted small">The code works once, until ${esc(fmtTime.format(new Date(expiresAt)))}.</p>
+    ${fingerprint ? `<details class="muted small"><summary>Certificate fingerprint</summary>
+      <p>When you install the Photobox certificate on your phone, its SHA-256 fingerprint must be:</p><p class="mono">${esc(fingerprint)}</p></details>` : ''}`;
+  $('#pair-address')?.addEventListener('change', (e) => {
+    const link = links[Number(e.target.value)];
+    $('#pair-qr').innerHTML = link.qr;
+    $('#pair-url').textContent = link.url;
+  });
+}
+
+async function openPairDialog() {
+  const body = $('#pair-body');
+  clearInterval(pairTimer);
+  pairDialog.showModal();
+  if (!state.network) {
+    body.innerHTML = `
+      <p>Phones connect to Photobox over your Wi-Fi or VPN. That is turned off right now.</p>
+      <p class="muted">Quit Photobox and start it with network access:</p>
+      <pre class="cmd">photobox serve --listen 0.0.0.0</pre>`;
+    return;
+  }
+  body.innerHTML = '<p class="muted">Making a pairing code…</p>';
+  try {
+    const known = new Set((await loadDevices()).map((d) => d.id));
+    const pairing = await api('/api/pairing', { method: 'POST' });
+    renderPairing(pairing);
+    pairTimer = setInterval(async () => {
+      if (!pairDialog.open) return clearInterval(pairTimer);
+      const added = (await loadDevices()).find((d) => !known.has(d.id));
+      if (added) {
+        clearInterval(pairTimer);
+        body.innerHTML = `<p class="paired">${icon('check')}<span><b>${esc(added.name)}</b> is connected.</span></p>
+          <p class="muted">On the phone, choose <b>Install app</b> or <b>Add to Home screen</b> in the browser menu to use Photobox like an app.</p>`;
+      } else if (Date.now() > pairing.expiresAt) {
+        clearInterval(pairTimer);
+        body.innerHTML = '<p>The pairing code has expired.</p><button type="button" class="btn" id="pair-again">Make a new code</button>';
+        $('#pair-again').addEventListener('click', openPairDialog);
+      }
+    }, 2000);
+  } catch (err) {
+    body.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  }
+}
+
+$('#pair-btn').addEventListener('click', openPairDialog);
+$('#pair-close').addEventListener('click', () => pairDialog.close());
+pairDialog.addEventListener('close', () => clearInterval(pairTimer));
 
 let toastTimer = null;
 function toast(message) {
@@ -679,7 +784,7 @@ async function showCurrent() {
   renderInfo(details);
 }
 
-const canReveal = () => Boolean(desktop) || state.platform === 'darwin';
+const canReveal = () => Boolean(desktop) || (state.platform === 'darwin' && !state.remote);
 const revealLabel = () => (state.platform === 'darwin' ? 'Show in Finder' : 'Show in folder');
 
 async function reveal(item) {
@@ -771,3 +876,7 @@ stage.addEventListener('touchend', (e) => {
 await poll();
 await loadAlbums();
 setView();
+if (!state.remote) loadDevices();
+
+// Installable as an app, and thumbnails that keep working on a weak connection.
+if ('serviceWorker' in navigator && !desktop) navigator.serviceWorker.register('/sw.js').catch(() => {});

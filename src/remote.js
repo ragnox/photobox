@@ -1,0 +1,76 @@
+// Access from other devices (phones) on your network or VPN: one-time pairing
+// codes made on this computer, and the device tokens they are traded for.
+import crypto from 'node:crypto';
+import os from 'node:os';
+
+const CODE_TTL_MS = 10 * 60 * 1000;
+const SEEN_EVERY_MS = 60 * 1000;
+const COOKIE = 'photobox_device';
+const COOKIE_DAYS = 400; // the longest browsers keep a cookie
+
+export const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+const randomToken = (bytes) => crypto.randomBytes(bytes).toString('base64url');
+const deviceName = (name) => String(name ?? '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Device';
+
+/** The device token a request carries: `Authorization: Bearer …` (apps) or the cookie (browsers). */
+export function requestToken(req) {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) return auth.slice(7).trim();
+  const m = (req.headers.cookie ?? '').match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+export const tokenCookie = (token) =>
+  `${COOKIE}=${token}; Path=/; Max-Age=${COOKIE_DAYS * 86400}; HttpOnly; Secure; SameSite=Strict`;
+
+/**
+ * Pairing codes live only in memory and work once. Device tokens are random,
+ * and the library keeps only their SHA-256, so a copy of the database can't be
+ * used to get in.
+ */
+export class Pairing {
+  constructor(library, { ttl = CODE_TTL_MS } = {}) {
+    this.library = library;
+    this.ttl = ttl;
+    this.codes = new Map(); // code -> expiry (epoch ms)
+  }
+
+  create() {
+    this.#prune();
+    const code = randomToken(16);
+    const expiresAt = Date.now() + this.ttl;
+    this.codes.set(code, expiresAt);
+    return { code, expiresAt };
+  }
+
+  /** Trade a code for a new device and its token, or null if the code is unknown, used or expired. */
+  redeem(code, name) {
+    this.#prune();
+    if (typeof code !== 'string' || !this.codes.has(code)) return null;
+    this.codes.delete(code);
+    const token = randomToken(32);
+    const device = this.library.addDevice(deviceName(name), hashToken(token));
+    return { token, device };
+  }
+
+  /** The paired device a token belongs to, or null. */
+  authenticate(token) {
+    if (typeof token !== 'string' || !token) return null;
+    const device = this.library.deviceByTokenHash(hashToken(token));
+    if (!device) return null;
+    if (!device.last_seen_at || Date.now() - device.last_seen_at > SEEN_EVERY_MS) this.library.touchDevice(device.id);
+    return device;
+  }
+
+  #prune() {
+    const now = Date.now();
+    for (const [code, expiresAt] of this.codes) if (expiresAt <= now) this.codes.delete(code);
+  }
+}
+
+/** IPv4 addresses other devices can reach this computer at: Wi-Fi, Ethernet, VPN. */
+export function networkAddresses() {
+  return Object.values(os.networkInterfaces()).flat()
+    .filter((a) => a && a.family === 'IPv4' && !a.internal)
+    .map((a) => a.address);
+}

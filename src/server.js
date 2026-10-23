@@ -4,29 +4,50 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import QRCode from 'qrcode';
 import { BROWSER_IMAGE_EXT, BROWSER_VIDEO_EXT } from './media.js';
 import { cachePath, makePreview } from './thumbs.js';
+import { requestToken, tokenCookie } from './remote.js';
 
 const run = promisify(execFile);
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 // Photo libraries live in all kinds of places, including our own ~/.photobox cache.
 const SEND = { dotfiles: 'allow' };
+// What an unpaired device may load on the network listener: the pairing page and the CA it needs.
+const OPEN_PATHS = new Set(['/pair.html', '/pair.js', '/style.css', '/api/pair', '/photobox-ca.crt']);
 
 function parseCursor(value) {
   const m = typeof value === 'string' && value.match(/^(-?\d+):(\d+)$/);
   return m ? [Number(m[1]), Number(m[2])] : null;
 }
 
-export function createApp({ library, indexer, watcher, config }) {
+/**
+ * The app for one listener. The local one (127.0.0.1) answers only to localhost
+ * and can do everything. The network one (`remote`) lets paired devices browse
+ * and favorite; managing the library, pairing and devices stays on this computer.
+ */
+export function createApp({ library, indexer, watcher, config, network = null }, { remote = false } = {}) {
   const app = express();
   app.disable('x-powered-by');
 
-  // Answer only to localhost and only to JSON writes: blocks DNS rebinding and
-  // cross-site form posts from reaching your photos or the API.
+  if (remote) {
+    app.use((req, res, next) => {
+      req.device = network.pairing.authenticate(requestToken(req));
+      if (req.device || OPEN_PATHS.has(req.path)) return next();
+      if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'This device is not paired with Photobox' });
+      res.redirect(303, '/pair.html');
+    });
+  } else {
+    // Answer only to localhost: blocks DNS rebinding from reaching your photos or the API.
+    app.use((req, res, next) => {
+      const host = (req.headers.host ?? '').replace(/:\d+$/, '');
+      if (!LOCAL_HOSTS.has(host)) return res.status(403).send('Forbidden');
+      next();
+    });
+  }
+  // Only JSON writes: blocks cross-site form posts.
   app.use((req, res, next) => {
-    const host = (req.headers.host ?? '').replace(/:\d+$/, '');
-    if (!LOCAL_HOSTS.has(host)) return res.status(403).send('Forbidden');
     if (!['GET', 'HEAD'].includes(req.method) && !(req.headers['content-type'] ?? '').startsWith('application/json')) {
       return res.status(415).json({ error: 'Expected application/json' });
     }
@@ -34,6 +55,11 @@ export function createApp({ library, indexer, watcher, config }) {
   });
   app.use(express.json());
   app.use(express.static(PUBLIC_DIR));
+
+  const hostOnly = (req, res, next) => {
+    if (remote) return res.status(403).json({ error: 'Only available on the computer running Photobox' });
+    next();
+  };
 
   const mediaOr404 = (req, res) => {
     const media = library.media(Number(req.params.id));
@@ -44,6 +70,7 @@ export function createApp({ library, indexer, watcher, config }) {
   app.get('/api/status', (req, res) => {
     res.json({
       version: indexer.version, indexing: indexer.status, stats: library.stats(), sources: library.sources(), platform: process.platform,
+      remote, device: req.device?.name ?? null, network: !remote && network ? network.info() : null,
     });
   });
 
@@ -119,7 +146,7 @@ export function createApp({ library, indexer, watcher, config }) {
     res.json({ favorite: Boolean(req.body?.favorite), version: indexer.version });
   });
 
-  app.post('/api/media/:id/reveal', async (req, res) => {
+  app.post('/api/media/:id/reveal', hostOnly, async (req, res) => {
     const media = mediaOr404(req, res);
     if (!media) return;
     const file = library.primaryPath(media.id);
@@ -128,7 +155,7 @@ export function createApp({ library, indexer, watcher, config }) {
     res.json({ ok: true });
   });
 
-  app.post('/api/sources', async (req, res) => {
+  app.post('/api/sources', hostOnly, async (req, res) => {
     const raw = String(req.body?.path ?? '').trim().replace(/^~(?=$|\/)/, process.env.HOME ?? '~');
     const dir = path.resolve(raw);
     let stat;
@@ -147,7 +174,7 @@ export function createApp({ library, indexer, watcher, config }) {
     res.json(source);
   });
 
-  app.delete('/api/sources/:id', async (req, res) => {
+  app.delete('/api/sources/:id', hostOnly, async (req, res) => {
     const source = library.source(Number(req.params.id));
     if (!source) return res.status(404).json({ error: 'Not found' });
     await watcher.unwatch(source.id);
@@ -155,13 +182,13 @@ export function createApp({ library, indexer, watcher, config }) {
     res.json({ ok: true });
   });
 
-  app.post('/api/rescan', (req, res) => {
+  app.post('/api/rescan', hostOnly, (req, res) => {
     for (const source of library.sources()) indexer.scanSource(source).catch((err) => indexer.error(source.path, err));
     res.json({ ok: true });
   });
 
   // Native folder picker - the browser can't hand us a real path.
-  app.post('/api/pick-folder', async (req, res) => {
+  app.post('/api/pick-folder', hostOnly, async (req, res) => {
     if (process.platform !== 'darwin') return res.status(501).json({ error: 'Type the folder path instead' });
     try {
       const { stdout } = await run('osascript', [
@@ -172,6 +199,42 @@ export function createApp({ library, indexer, watcher, config }) {
     } catch {
       res.json({ cancelled: true });
     }
+  });
+
+  // --- pairing and devices ---------------------------------------------------
+
+  // A one-time code, as a link and QR code per address this computer can be reached at.
+  app.post('/api/pairing', hostOnly, async (req, res) => {
+    if (!network) return res.status(409).json({ error: 'Network access is off. Start Photobox with --listen to connect a phone.' });
+    const { code, expiresAt } = network.pairing.create();
+    const info = network.info();
+    const links = await Promise.all(info.urls.map(async (base) => {
+      const url = `${base}/pair.html#${code}`;
+      return { url, qr: await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }) };
+    }));
+    res.json({ expiresAt, links, fingerprint: info.fingerprint });
+  });
+
+  if (remote) {
+    app.post('/api/pair', (req, res) => {
+      const paired = network.pairing.redeem(req.body?.code, req.body?.name);
+      if (!paired) return res.status(401).json({ error: 'This pairing code was already used or has expired. Make a new one on your computer.' });
+      res.setHeader('Set-Cookie', tokenCookie(paired.token));
+      res.json({ token: paired.token, device: paired.device, ownCertificate: Boolean(network.tls.caDer) });
+    });
+  }
+
+  app.get('/api/devices', hostOnly, (req, res) => res.json(library.devices()));
+
+  app.delete('/api/devices/:id', hostOnly, (req, res) => {
+    if (!library.removeDevice(Number(req.params.id))) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  });
+
+  // Photobox's own CA, for installing on a phone (only when Photobox made the certificate).
+  app.get('/photobox-ca.crt', (req, res) => {
+    if (!network?.tls.caDer) return res.status(404).end();
+    res.attachment('photobox-ca.crt').type('application/x-x509-ca-cert').send(network.tls.caDer);
   });
 
   return app;

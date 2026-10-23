@@ -11,9 +11,11 @@ import { exportLibrary, MANIFEST } from '../src/export.js';
 
 const USAGE = `photobox - your photos, on your disk
 
-  photobox serve [folders...] [--port 4567] [--open]
+  photobox serve [folders...] [--port 4567] [--open] [--listen <address>]
       Start the app. Folders given here are added to the library and watched.
       Point it at an extracted Google Takeout or any folder of photos.
+      With --listen, phones can pair and browse the library over HTTPS on
+      <address> (0.0.0.0 for every network, or e.g. a WireGuard address).
 
   photobox scan <folders...>
       Index once without starting the server, then print a summary.
@@ -27,6 +29,11 @@ Options:
   --data <dir>   Library database + thumbnail cache (default ~/.photobox, or $PHOTOBOX_DATA)
   --port <n>     HTTP port (default 4567)
   --open         Open the browser once the server is up
+  --listen <a>   Also serve paired devices on address <a>, over HTTPS on port + 1
+  --remote-port <n>
+                 Port for --listen instead of port + 1
+  --tls-cert <file> --tls-key <file>
+                 Your own certificate for --listen (e.g. from tailscale cert)
   --dry-run      export: list what would be copied, copy nothing
 `;
 
@@ -36,6 +43,10 @@ const { values: opts, positionals } = parseArgs({
     data: { type: 'string' },
     port: { type: 'string' },
     open: { type: 'boolean', default: false },
+    listen: { type: 'string' },
+    'remote-port': { type: 'string' },
+    'tls-cert': { type: 'string' },
+    'tls-key': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
   },
@@ -46,6 +57,11 @@ const dest = command === 'export' && args.length ? path.resolve(args.shift()) : 
 if (opts.help || !['serve', 'scan', 'export'].includes(command) || (command === 'export' && !dest)) {
   console.log(USAGE);
   process.exit(opts.help ? 0 : 1);
+}
+
+if (Boolean(opts['tls-cert']) !== Boolean(opts['tls-key'])) {
+  console.error('--tls-cert and --tls-key go together');
+  process.exit(1);
 }
 
 const folders = args.map((f) => path.resolve(f));
@@ -127,7 +143,11 @@ if (command === 'scan' || command === 'export') {
 } else {
   let photobox;
   try {
-    photobox = await startPhotobox({ dataDir: opts.data, port: opts.port, folders, onScanned: printScan });
+    photobox = await startPhotobox({
+      dataDir: opts.data, port: opts.port, folders, onScanned: printScan,
+      listen: opts.listen, remotePort: opts['remote-port'] ? Number(opts['remote-port']) : undefined,
+      tlsCert: opts['tls-cert'], tlsKey: opts['tls-key'],
+    });
   } catch (err) {
     if (err instanceof AlreadyRunning) {
       console.log(`${err.message}${folders.length ? ' - add the folders there.' : ''}`);
@@ -138,6 +158,11 @@ if (command === 'scan' || command === 'export') {
     process.exit(1);
   }
   console.log(`Photobox running at ${photobox.url}  (library: ${photobox.config.dataDir})`);
+  if (photobox.network) {
+    console.log(`Paired devices can connect at ${photobox.network.urls.join(', ') || '(no network address found)'}`);
+    console.log('  To pair a phone, open Photobox on this computer and choose "Connect a phone".');
+    if (photobox.network.fingerprint) console.log(`  Certificate authority fingerprint: ${photobox.network.fingerprint}`);
+  }
   logProgress(photobox.indexer);
   openBrowser(photobox.url);
   photobox.scanned.catch((err) => console.error(err));

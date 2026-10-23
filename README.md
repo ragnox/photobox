@@ -65,7 +65,7 @@ It also handles these:
 ## Commands
 
 ```
-photobox serve [folders...] [--port 4567] [--open] [--data ~/.photobox]
+photobox serve [folders...] [--port 4567] [--open] [--data ~/.photobox] [--listen 0.0.0.0]
 photobox scan <folders...>          # index once, print a summary, exit
 photobox export <dest> [folders...] [--dry-run]   # copy everything into <dest>/YYYY/MM/
 npm test                            # sidecar + export tests, end-to-end import of a fake Takeout
@@ -112,6 +112,35 @@ place it was taken. After that the folder is all you need: no Takeout, no Photob
 Without folders it rescans the library's folders, or, if Photobox is running, exports that
 running library as it is.
 
+## Your library on your phone
+
+```
+photobox serve --listen 0.0.0.0
+```
+
+This also serves Photobox to phones on your Wi-Fi or VPN, over HTTPS on port 4568. Instead of
+`0.0.0.0` (every network this computer is on) you can give one address, such as a WireGuard
+address. Nothing is reachable from the internet unless you forward a port yourself.
+
+1. On the computer, open Photobox and choose **Connect a phone** in the sidebar. It shows a QR
+   code with a one-time pairing code, valid for 10 minutes.
+2. Scan it with the phone's camera. The first time, the browser warns that the connection is not
+   private, because Photobox uses its own certificate. Tap **Advanced**, then **Proceed**.
+3. Name the phone and tap **Connect**. The phone can now see your library.
+4. To install Photobox as an app, the phone has to trust that certificate once. The pairing page
+   explains how: download `photobox-ca.crt`, install it in Android Settings as a CA certificate,
+   and check that its fingerprint matches the one on the computer. Then use **Install app** in
+   the browser menu.
+
+What a paired phone can do: browse the timeline and albums, view photos and videos, and set
+favorites. Adding or removing folders, rescanning, pairing and the device list stay on the
+computer. **Connect a phone** lists the paired devices and when each was last seen, and
+disconnecting one locks it out immediately.
+
+The certificate authority lives in `~/.photobox/tls`. Photobox renews the server certificate
+when your addresses change, and the phone keeps trusting it. If you'd rather use a certificate
+browsers already trust, such as one from `tailscale cert`, pass `--tls-cert` and `--tls-key`.
+
 ## Desktop app
 
 `desktop/main.js` runs the library server in an Electron utility process, so imports
@@ -152,8 +181,12 @@ src/db.js                SQLite schema + queries (node:sqlite, no native build)
 src/export.js            copy the library into <dest>/YYYY/MM/ + photobox-export.json
 src/manifest.js          reading photobox-export.json, for the export and the indexer
 src/watcher.js           chokidar → debounced rescans of the affected folders
-src/server.js            local HTTP API, localhost only
+src/server.js            HTTP API: the localhost listener and the one for paired devices
+src/remote.js            pairing codes and device tokens
+src/tls.js               Photobox's own CA and server certificate for --listen
 public/                  the app: justified timeline, year scrubber, albums, viewer
+public/pair.html         the page a phone opens from the QR code
+public/sw.js             service worker: installable app, cached thumbnails
 ```
 
 ## Security
@@ -162,6 +195,11 @@ The server binds to `127.0.0.1`. It rejects requests whose `Host` isn't localhos
 which blocks DNS rebinding, and it only accepts JSON for writes, so another website
 can't post to it from your browser.
 
+With `--listen`, a second listener serves other devices, over HTTPS only. Every request needs a
+paired device's token, except the pairing page and the CA download. Tokens are 256-bit random
+values sent as a cookie (HttpOnly, Secure, SameSite=Strict) or a bearer header. The database
+stores only their SHA-256. Pairing codes work once and expire after 10 minutes.
+
 ## Not yet
 
 - Code signing and notarization, auto-updates, and a Windows or Linux build. The config is there, but it hasn't been tried.
@@ -169,6 +207,7 @@ can't post to it from your browser.
 - Reading `.zip` parts directly (extract them first).
 - Transcoding for videos the browser can't play (`.avi`, `.mts`, …). Those show a thumbnail and **Show in Finder**.
 - Writing metadata back into files. Favorites you set in Photobox live in its database.
-- A phone app. [docs/android-plan.md](docs/android-plan.md) is the plan for an open-source
-  Android replacement for Google Photos built on Photobox: backup with proof, browsing the
-  library from the phone, and freeing space safely.
+- Phone backup. Browsing from a phone works (see above). [docs/android-plan.md](docs/android-plan.md)
+  is the plan for the rest of an open-source Android replacement for Google Photos: backup with
+  proof, and freeing space safely.
+- `--listen` in the desktop app. For now, start network access with `photobox serve --listen`.
