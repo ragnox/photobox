@@ -38,10 +38,10 @@ class FolderContext {
   async addJson(file) {
     if (path.basename(file) === MANIFEST) return this.addManifest(path.dirname(file));
     const data = await readJson(file);
-    const type = classifyJson(data);
+    const type = classifyJson(data, path.basename(file));
     const folder = this.folder(path.dirname(file));
     if (type === 'sidecar') folder.sidecars.add(file, data);
-    else if (type === 'album') folder.album = albumTitle(data) ?? folder.album;
+    else if (type === 'album') folder.album = albumTitle(data, path.basename(path.dirname(file))) ?? folder.album;
   }
 
   async addManifest(dir) {
@@ -69,6 +69,8 @@ class FolderContext {
 }
 
 export class Indexer extends EventEmitter {
+  #albumsChanged = false;
+
   constructor(library, config) {
     super();
     this.library = library;
@@ -185,7 +187,8 @@ export class Indexer extends EventEmitter {
     }
     const { added } = this.status;
     this.setStatus({ running: false, phase: 'idle', source: null, lastScan: { source: source.path, added, files: mediaFiles.length, ms: Date.now() - started } });
-    if (added) this.changed();
+    if (added || this.#albumsChanged) this.changed();
+    this.#albumsChanged = false;
     return { files: mediaFiles.length, added };
   }
 
@@ -200,7 +203,11 @@ export class Indexer extends EventEmitter {
     const byHash = (hash) => (hash && exported?.byHash.get(hash)) || null;
     let listed = exported ? exported.find(file) ?? byHash(existing && this.library.media(existing.media_id)?.hash) : null;
     let sidecarPath = sidecar?.entry.path ?? listed?.key ?? null;
+    const albumIds = (meta) => [...new Set([album, ...(meta?.albums ?? [])].filter(Boolean))].map((name) => this.library.albumId(name));
     if (existing && existing.size === stat.size && existing.mtime === Math.floor(stat.mtimeMs) && existing.sidecar === sidecarPath) {
+      // The file is as it was, but its albums may not be (an album Photobox learned to read later).
+      const ids = albumIds(listed && manifestMeta(listed.entry));
+      if (this.library.setFileAlbums(existing.id, ids)) this.#albumsChanged = true;
       return false;
     }
 
@@ -243,9 +250,8 @@ export class Indexer extends EventEmitter {
       }
     }
 
-    const albumIds = [...new Set([album, ...(sc?.albums ?? [])].filter(Boolean))].map((name) => this.library.albumId(name));
     this.library.upsertFile({
-      path: file, sourceId: source.id, mediaId: media.id, albumIds,
+      path: file, sourceId: source.id, mediaId: media.id, albumIds: albumIds(sc),
       size: stat.size, mtime: Math.floor(stat.mtimeMs), sidecar: sidecarPath,
     });
     // The file's content changed: the media it used to point at may be orphaned now.

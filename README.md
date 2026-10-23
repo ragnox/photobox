@@ -47,6 +47,7 @@ people) over JSON "sidecar" files whose names often don't match the photo's name
 | `IMG_1-edited.jpg`, `-bearbeitet`, `-modifié`, … | the original's sidecar |
 | long names | cut at ~51 chars: `…Long Appl.json`, `….jpg.supp.json`, `….jpg.s.json` |
 | `IMG_1.MP4` (live photo) | `IMG_1.HEIC.json` |
+| `PXL_1.MP` (Pixel motion photo clip) | `PXL_1.MP.jpg.supplemental-metadata.json` |
 | renamed/sanitized files | matched through the `title` field |
 | sidecar in another zip part | matched by path below `Takeout/` |
 | `Café.jpg` NFD vs NFC | Unicode-normalized |
@@ -54,9 +55,9 @@ people) over JSON "sidecar" files whose names often don't match the photo's name
 It also handles these:
 
 - **Duplicates.** A photo that appears in "Photos from 2019" and in an album is shown once. Files are matched by content (size plus the first and last 64 KB).
-- **Albums.** Folders with album `metadata.json` become albums. Year folders don't.
+- **Albums.** Folders with an album `metadata.json` become albums, also when it holds only a title (newer exports) or is named in the export's language. An album without a title is named after its folder. Year folders aren't albums.
 - **Dates.** EXIF with a time zone comes first, then the Takeout timestamp, then EXIF without a zone, then a date in the file name, then the upload date, then the file's modified time. A UTC time is shown in the time zone of the photo's GPS location, so a Tokyo photo shows Tokyo time.
-- **Live photos.** A short clip next to a still with the same name becomes that photo's motion. It's hidden from the grid and plays when you press **LIVE** or `L`.
+- **Live photos.** A short clip next to a still with the same name becomes that photo's motion: `IMG_1.HEIC` + `IMG_1.MOV`, and Pixel motion photos, which Takeout splits into `PXL_1.MP.jpg` + `PXL_1.MP`. It's hidden from the grid and plays when you press **LIVE** or `L`.
 - **Trashed items** in the export are skipped.
 - **HEIC and RAW.** On macOS these are decoded with `sips`. Videos get thumbnails and metadata from `ffmpeg`/`ffprobe`.
 - **Watching.** New, changed and deleted files in any source folder show up in the open app within a few seconds.

@@ -62,3 +62,28 @@ test('album counts and covers match what the album shows: no live-photo clips, n
   assert.equal(library.timeline({ albumId: trip }).items.length, 2);
   assert.equal(library.media(album.cover).filename, 'IMG_2.jpg', 'the newest visible photo, not the archived one');
 });
+
+test('live photos pair up, including Pixel motion photos from Takeout ("X.MP.jpg" + "X.MP")', async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-db-'));
+  const library = new Library(path.join(tmp, 'library.db'));
+  t.after(async () => {
+    library.close();
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+  const source = library.addSource('/photos');
+  const add = (name, kind, duration = null) => {
+    const id = library.insertMedia({ hash: name, kind, filename: name, takenAt: 0, localTime: '2026-05-04 18:38:43', dateSource: 'file', duration });
+    library.upsertFile({ path: `/photos/${name}`, sourceId: source.id, mediaId: id, size: 1, mtime: 0 });
+    return id;
+  };
+  const pixel = add('PXL_20260504_163843948.MP.jpg', 'image');
+  const motion = add('PXL_20260504_163843948.MP', 'video', 0.83);
+  const iphone = add('IMG_1234.HEIC', 'image');
+  const live = add('IMG_1234.MOV', 'video', 2.5);
+  const movie = add('IMG_9999.MOV', 'video', 2.5);
+  library.linkLivePhotos(source.id);
+  assert.equal(library.media(motion).live_of, pixel);
+  assert.equal(library.media(live).live_of, iphone);
+  assert.equal(library.media(movie).live_of, null, 'a short video without a still stays a video');
+  assert.deepEqual(library.timeline({}).items.map((i) => i.id).sort(), [pixel, iphone, movie].sort());
+});

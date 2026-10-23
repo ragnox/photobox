@@ -60,3 +60,20 @@ test('a folder that comes back empty is treated as unavailable, not as "everythi
   await indexer.scanSource(source);
   assert.equal(library.stats().photos, 1);
 });
+
+test('albums with only a title, and albums Photobox learns about after the photos were indexed', async (t) => {
+  const { put, library, indexer, source } = await setup(t);
+  await put('Trip/IMG_1.jpg', await jpeg(1, 2, 3));
+  await put('Trip/IMG_2.jpg', await jpeg(3, 2, 1));
+  await put('Family/IMG_3.jpg', await jpeg(5, 5, 5));
+  await indexer.scanSource(source);
+  assert.deepEqual(library.albums(), []);
+
+  // The album files arrive (or Photobox learns to read them): the next scan files the photos in, without re-importing.
+  await put('Trip/metadata.json', Buffer.from(JSON.stringify({ title: 'Sailing 2024' })));
+  await put('Family/metadata.json', Buffer.from(JSON.stringify({ title: '' })));
+  const version = indexer.version;
+  assert.equal((await indexer.scanSource(source)).added, 0);
+  assert.deepEqual(library.albums().map((a) => [a.name, a.count]), [['Family', 1], ['Sailing 2024', 2]]);
+  assert.ok(indexer.version > version, 'open apps are told to refresh');
+});

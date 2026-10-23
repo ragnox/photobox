@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { isMotionClip } from './media.js';
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -169,10 +170,18 @@ export class Library {
           source_id = excluded.source_id, media_id = excluded.media_id,
           size = excluded.size, mtime = excluded.mtime, sidecar = excluded.sidecar`)
         .run(path, sourceId, mediaId, size, mtime, sidecar ?? null);
-      const { id } = this.q('SELECT id FROM files WHERE path = ?').get(path);
-      this.q('DELETE FROM file_albums WHERE file_id = ?').run(id);
-      for (const albumId of albumIds) this.q('INSERT OR IGNORE INTO file_albums (file_id, album_id) VALUES (?, ?)').run(id, albumId);
+      this.setFileAlbums(this.q('SELECT id FROM files WHERE path = ?').get(path).id, albumIds);
     });
+  }
+
+  /** Put a file in exactly these albums. Returns whether anything changed. */
+  setFileAlbums(fileId, albumIds) {
+    const now = this.q('SELECT album_id FROM file_albums WHERE file_id = ? ORDER BY album_id').all(fileId).map((r) => r.album_id);
+    const wanted = [...new Set(albumIds)].sort((a, b) => a - b);
+    if (now.length === wanted.length && now.every((id, i) => id === wanted[i])) return false;
+    this.q('DELETE FROM file_albums WHERE file_id = ?').run(fileId);
+    for (const albumId of wanted) this.q('INSERT INTO file_albums (file_id, album_id) VALUES (?, ?)').run(fileId, albumId);
+    return true;
   }
 
   /** Delete file rows; returns hashes of media that no longer have any file. */
@@ -277,13 +286,16 @@ export class Library {
     const rows = this.q(`
       SELECT f.path, f.media_id, m.kind, m.duration, m.live_of FROM files f
       JOIN media m ON m.id = f.media_id WHERE f.source_id = ?`).all(sourceId);
-    const stem = (p) => p.replace(/\.[^./]+$/, '').normalize('NFC').toLowerCase();
+    const key = (p) => p.normalize('NFC').toLowerCase();
+    const stem = (p) => key(p).replace(/\.[^./]+$/, '');
+    // "IMG_1.HEIC" + "IMG_1.MOV", and a Pixel motion photo from Takeout: "X.MP.jpg" + "X.MP".
+    const clipStem = (p) => (isMotionClip(p) ? key(p) : stem(p));
     const stills = new Map();
     for (const r of rows) if (r.kind === 'image') stills.set(stem(r.path), r.media_id);
     this.tx(() => {
       for (const r of rows) {
         if (r.kind !== 'video' || r.live_of || (r.duration != null && r.duration > 6)) continue;
-        const still = stills.get(stem(r.path));
+        const still = stills.get(clipStem(r.path));
         if (still) this.q('UPDATE media SET live_of = ? WHERE id = ?').run(still, r.media_id);
       }
     });

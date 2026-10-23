@@ -128,6 +128,16 @@ test('same name in the same month gets a number; live clips keep their still’s
   assert.equal(m.items['2020/05/Trip_ day 1_2.jpg'].originalName, 'Trip: day 1/2.jpg');
 });
 
+test('a Pixel motion photo is exported the way Google names it: "X.MP.jpg" and "X.MP"', async (t) => {
+  const { library, add, dest, files, manifest } = await setup(t);
+  const opts = { taken: '2026-05-04T16:38:43Z', local: '2026-05-04 18:38:43' };
+  const still = await add('PXL_20260504_163843948.MP.jpg', opts);
+  await add('PXL_20260504_163843948.MP', { ...opts, liveOf: still });
+  await exportLibrary(library, dest);
+  assert.deepEqual(await files(), ['2026/05/PXL_20260504_163843948.MP', '2026/05/PXL_20260504_163843948.MP.jpg', MANIFEST]);
+  assert.equal((await manifest()).items['2026/05/PXL_20260504_163843948.MP'].liveOf, '2026/05/PXL_20260504_163843948.MP.jpg');
+});
+
 test('never overwrites, and running again copies only what is new or missing', async (t) => {
   const { library, add, dest, files } = await setup(t);
   const opts = { taken: '2021-01-10T10:00:00Z', local: '2021-01-10 11:00:00' };

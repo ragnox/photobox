@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import QRCode from 'qrcode';
-import { BROWSER_IMAGE_EXT, BROWSER_VIDEO_EXT } from './media.js';
+import { BROWSER_IMAGE_EXT, BROWSER_VIDEO_EXT, isMotionClip } from './media.js';
 import { thumbPath, previewPath, makePreview } from './thumbs.js';
 import { requestToken, tokenCookie } from './remote.js';
 
@@ -21,6 +21,12 @@ const CACHED = { ...SEND, maxAge: '365d', immutable: true };
 const OPEN_PATHS = new Set(['/pair.html', '/pair.js', '/style.css', '/api/pair', '/photobox-ca.crt']);
 
 const viewFilter = (req) => ({ view: req.query.view ?? 'all', albumId: Number(req.query.album) || null });
+
+/** Send a photo or video file; motion clips ("X.MP") are MP4s under a name browsers don't know. */
+function sendMedia(res, file) {
+  if (isMotionClip(file)) res.type('video/mp4');
+  res.sendFile(file, SEND);
+}
 
 function parseCursor(value) {
   const m = typeof value === 'string' && value.match(/^(-?\d+):(\d+)$/);
@@ -119,7 +125,7 @@ export function createApp({ library, indexer, watcher, config, network = null },
     const ext = path.extname(file).toLowerCase();
     if (media.kind === 'video') {
       if (!BROWSER_VIDEO_EXT.has(ext)) return res.status(415).json({ error: `Can't play ${ext} in the browser` });
-      return res.sendFile(file, SEND);
+      return sendMedia(res, file);
     }
     if (BROWSER_IMAGE_EXT.has(ext)) return res.sendFile(file, SEND);
     const preview = previewPath(config, media.hash);
@@ -135,7 +141,7 @@ export function createApp({ library, indexer, watcher, config, network = null },
     const video = library.mediaDetails(Number(req.params.id))?.live_video;
     const file = video && library.primaryPath(video);
     if (!file) return res.status(404).end();
-    res.sendFile(file, SEND);
+    sendMedia(res, file);
   });
 
   app.post('/api/media/:id/favorite', (req, res) => {

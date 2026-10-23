@@ -171,10 +171,12 @@ export async function exportLibrary(library, dest, { dryRun = false, onProgress 
       continue;
     }
     const ext = path.extname(source.file);
-    // A clip takes its still's name ("IMG_1 (2).HEIC" -> "IMG_1 (2).MOV") so apps keep them paired.
-    const [dir, stem] = stillRel
+    // A clip takes its still's name ("IMG_1 (2).HEIC" -> "IMG_1 (2).MOV") so apps keep them paired;
+    // a Pixel motion clip keeps Google's form ("X.MP.jpg" -> "X.MP", not "X.MP.MP").
+    let [dir, stem] = stillRel
       ? [path.posix.dirname(stillRel), path.posix.parse(stillRel).name]
       : [`${m.local_time.slice(0, 4)}/${m.local_time.slice(5, 7)}`, safeStem(m.filename)];
+    if (stillRel && stem.toLowerCase().endsWith(ext.toLowerCase())) stem = stem.slice(0, -ext.length);
     const { rel, present } = await freeName(dest, dir, stem, ext, m.hash, reserved);
     reserved.add(nameKey(rel));
     items[rel] = manifestEntry(m, rel, stillRel);

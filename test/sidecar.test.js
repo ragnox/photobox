@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SidecarIndex, classifyJson, parseSidecarName, mediaNameVariants, sidecarMeta, takeoutFolderKey,
+  SidecarIndex, classifyJson, albumTitle, parseSidecarName, mediaNameVariants, sidecarMeta, takeoutFolderKey,
 } from '../src/takeout/sidecar.js';
 
 const sidecar = (title, ts = 1563005700) => ({ title, photoTakenTime: { timestamp: String(ts) } });
@@ -119,4 +119,24 @@ test('takeoutFolderKey is stable across zip parts', () => {
     takeoutFolderKey('/x/takeout-002/Takeout/Google Photos/Trip'),
   );
   assert.equal(takeoutFolderKey('/Users/me/Pictures'), '/Users/me/Pictures');
+});
+
+test('a Pixel motion clip ("X.MP") shares its still\'s sidecar, without taking its name', () => {
+  const idx = new SidecarIndex();
+  idx.add('/t/PXL_20260504_163843948.MP.jpg.supplemental-metadata.json', sidecar('PXL_20260504_163843948.MP.jpg'));
+  assert.deepEqual(
+    { ...idx.find('PXL_20260504_163843948.MP'), entry: undefined },
+    { entry: undefined, method: 'partner' },
+  );
+  assert.equal(idx.find('PXL_20260504_163843948.MP').entry.path, '/t/PXL_20260504_163843948.MP.jpg.supplemental-metadata.json');
+  assert.equal(idx.find('PXL_20260504_163843948.MP.jpg').method, 'name');
+});
+
+test('album files with only a title (newer exports), in any export language; untitled albums take the folder name', () => {
+  assert.equal(classifyJson({ title: 'Sailing 2024' }, 'metadata.json'), 'album');
+  assert.equal(classifyJson({ title: 'Urlaub' }, 'Metadaten.json'), 'album');
+  assert.equal(classifyJson({ title: 'Spotlight' }, 'metadata(1).json'), 'album');
+  assert.equal(classifyJson({ title: 'Sailing 2024' }, 'notes.json'), null, 'any other JSON with a title is not an album');
+  assert.equal(albumTitle({ title: 'Sailing 2024' }, 'Sailing 2024'), 'Sailing 2024');
+  assert.equal(albumTitle({ title: '' }, 'Alex, Sam'), 'Alex, Sam');
 });

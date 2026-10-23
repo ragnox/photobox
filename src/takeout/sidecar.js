@@ -12,7 +12,7 @@
 // SidecarIndex resolves all of these; it is pure (no I/O) so it is easy to test.
 
 import path from 'node:path';
-import { stripMediaExt } from '../media.js';
+import { stripMediaExt, isMotionClip } from '../media.js';
 
 const SUPPLEMENTAL = '.supplemental-metadata';
 // Shortest name we trust for prefix matching of truncated sidecar names.
@@ -45,18 +45,22 @@ function stripEdited(stem) {
 }
 
 /** What kind of JSON is this? 'sidecar' (per photo), 'album' (album metadata) or null. */
-export function classifyJson(data) {
+// An album folder's own file, in the export's language. Newer exports may put only the title in it.
+const ALBUM_FILE = /^(metadata|metadaten|métadonnées|metadatos|metadati|metadados)(\(\d+\))?\.json$/i;
+
+export function classifyJson(data, fileName = '') {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   if (data.albumData) return 'album';
   if (data.photoTakenTime || data.creationTime) return 'sidecar';
-  if (typeof data.title === 'string' && ('access' in data || 'date' in data || 'description' in data)) {
+  if (typeof data.title === 'string' && ('access' in data || 'date' in data || 'description' in data || ALBUM_FILE.test(fileName))) {
     return 'album';
   }
   return null;
 }
 
-export function albumTitle(data) {
-  return (data.albumData ?? data).title || null;
+/** An album's name; an album without a title (shared ones can be) is named after its folder. */
+export function albumTitle(data, folderName = null) {
+  return (data.albumData ?? data).title || folderName || null;
 }
 
 /**
@@ -119,6 +123,11 @@ export class SidecarIndex {
    * location apply, but its title does not.
    */
   find(mediaName) {
+    // A Pixel motion photo's clip ("X.MP") has no sidecar of its own; it shares its still's ("X.MP.jpg").
+    if (isMotionClip(mediaName)) {
+      const still = this.find(`${mediaName}.jpg`);
+      if (still) return { entry: still.entry, method: 'partner' };
+    }
     const variants = mediaNameVariants(mediaName);
 
     for (const { base, counter } of variants) {
