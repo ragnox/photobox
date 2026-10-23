@@ -13,9 +13,9 @@ const THUMB = { width: 1400, height: 440 };
 const PREVIEW = 2560;
 
 /** Path inside a cache dir, sharded by hash: thumbs/ab/abcdef….webp */
-export function cachePath(dir, hash, ext) {
-  return path.join(dir, hash.slice(0, 2), `${hash}${ext}`);
-}
+const cachePath = (dir, hash, ext) => path.join(dir, hash.slice(0, 2), `${hash}${ext}`);
+export const thumbPath = (config, hash) => cachePath(config.thumbsDir, hash, '.webp');
+export const previewPath = (config, hash) => cachePath(config.previewsDir, hash, '.jpg');
 
 async function withTempDir(fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-'));
@@ -81,7 +81,6 @@ export async function makePreview(file, out) {
   } catch {
     await viaSips(file, PREVIEW, write);
   }
-  return out;
 }
 
 /** Oriented pixel size, when sharp can read the file. */

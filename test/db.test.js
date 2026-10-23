@@ -36,3 +36,29 @@ test('libraries from before file_albums keep their albums', async (t) => {
   library.removeFiles(['/photos/Trip/a.jpg']);
   assert.deepEqual(library.albums().map((a) => a.name), ['Best'], 'an album with no files left is removed');
 });
+
+test('album counts and covers match what the album shows: no live-photo clips, nothing archived', async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-db-'));
+  const library = new Library(path.join(tmp, 'library.db'));
+  t.after(async () => {
+    library.close();
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+  const source = library.addSource('/photos');
+  const trip = library.albumId('Trip');
+  const add = (name, takenAt, extra = {}) => {
+    const id = library.insertMedia({ hash: name, kind: name.endsWith('.mp4') ? 'video' : 'image', filename: name, takenAt, localTime: '2020-01-01 12:00:00', dateSource: 'file', ...extra });
+    library.upsertFile({ path: `/photos/Trip/${name}`, sourceId: source.id, mediaId: id, albumIds: [trip], size: 1, mtime: 0 });
+    return id;
+  };
+  const still = add('IMG_1.HEIC', 1000);
+  const clip = add('IMG_1.mp4', 3000);
+  library.db.prepare('UPDATE media SET live_of = ? WHERE id = ?').run(still, clip);
+  add('old.jpg', 4000, { archived: true });
+  add('IMG_2.jpg', 2000);
+
+  const [album] = library.albums();
+  assert.equal(album.count, 2, 'the still and IMG_2, as in the album view');
+  assert.equal(library.timeline({ albumId: trip }).items.length, 2);
+  assert.equal(library.media(album.cover).filename, 'IMG_2.jpg', 'the newest visible photo, not the archived one');
+});

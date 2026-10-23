@@ -1,15 +1,16 @@
 // Photobox desktop shell: starts the library server in a utility process and
 // shows the web UI in a native window.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, screen, shell, utilityProcess } from 'electron';
+import { defaultDataDir } from '../src/config.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
 // Same library as the CLI, so `photobox serve` and the app share one database.
-const dataDir = path.resolve(process.env.PHOTOBOX_DATA ?? path.join(os.homedir(), '.photobox'));
+// The server process inherits PHOTOBOX_DATA from our environment, if set.
+const dataDir = defaultDataDir();
 const windowStatePath = path.join(dataDir, 'window.json');
 const devIcon = path.join(here, '..', 'build', 'icon.png');
 
@@ -32,7 +33,6 @@ function startServer() {
   return new Promise((resolve, reject) => {
     server = utilityProcess.fork(path.join(here, 'server-process.js'), [], {
       serviceName: 'Photobox Library',
-      env: { ...process.env, PHOTOBOX_DATA: dataDir },
       stdio: 'inherit',
     });
     server.on('message', (message) => {
@@ -106,7 +106,8 @@ function createWindow() {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#121211' : '#f7f7f5',
     titleBarStyle: isMac ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 20, y: 22 },
-    icon: isMac ? undefined : devIcon,
+    // A packaged app has its icon built in; build/icon.png only exists in a checkout.
+    icon: isMac || app.isPackaged ? undefined : devIcon,
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
@@ -225,10 +226,7 @@ app.on('before-quit', (event) => {
   // Let the server close the database and remove its lock before we go.
   event.preventDefault();
   const child = server;
-  child.once('exit', () => {
-    server = null;
-    app.quit();
-  });
+  child.once('exit', () => app.quit());
   child.postMessage({ type: 'shutdown' });
   setTimeout(() => child.kill(), 3000);
 });

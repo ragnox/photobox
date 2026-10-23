@@ -25,8 +25,7 @@ System Settings → Privacy & Security and click **Open Anyway**. During develop
 npm start -- ~/Downloads/Takeout ~/Pictures/Camera --open
 ```
 
-Then open http://localhost:4567. In either version you can add folders with **Add folder**.
-In the desktop app you can also press ⌘O or drag folders from Finder onto the window.
+Then open http://localhost:4567 and add folders with **Add folder**.
 
 ## Getting your photos out of Google
 
@@ -65,10 +64,11 @@ It also handles these:
 ## Commands
 
 ```
-photobox serve [folders...] [--port 4567] [--open] [--data ~/.photobox] [--listen 0.0.0.0]
-photobox scan <folders...>          # index once, print a summary, exit
+photobox serve [folders...] [--port 4567] [--open] [--data ~/.photobox]
+               [--listen <address>] [--remote-port <n>] [--tls-cert <file> --tls-key <file>]
+photobox scan [folders...]          # index once (all known folders if none are given), then exit
 photobox export <dest> [folders...] [--dry-run]   # copy everything into <dest>/YYYY/MM/
-npm test                            # sidecar + export tests, end-to-end import of a fake Takeout
+npm test                            # all tests; the fake-Takeout import runs on macOS with ffmpeg
 npm run fake-takeout -- fixtures/demo   # build a demo export that hits every edge case
 ```
 
@@ -95,18 +95,13 @@ place it was taken. After that the folder is all you need: no Takeout, no Photob
 - **Run it again** to copy only what's new. A file you delete from the export is copied again
   next time. To drop a photo for good, delete it from the source.
 - **Reorganize freely.** Move or rename files inside the export, or sort them into folders of
-  your own. The next export finds them by content and updates `photobox-export.json` instead of
-  copying them again. It only reads files with the size of a photo that's still missing, so
-  other files you keep there cost nothing. Originals in a Photobox source folder inside the
-  export (a Takeout unpacked there, say) don't count as exported.
-- **`photobox-export.json`** in the folder records each file's albums, favorite flag,
-  description, people, place and exact time. It's also how the next run knows what's already
-  there. If it gets lost, files that are already in place are recognized by their content.
-- **Add it back any time.** Add the exported folder (or a copy of it, on another machine) to
-  Photobox and it reads `photobox-export.json`: albums, favorites, descriptions, people, places
-  and dates come back as they were, even for files you've moved or renamed inside it. A photo
-  in several albums is one file there, and it's listed in all of them. A re-export into a
-  watched folder updates what Photobox shows.
+  your own. The next export finds them by content instead of copying them again. Originals in a
+  Photobox source folder inside the export (a Takeout unpacked there, say) don't count.
+- **`photobox-export.json`** records each file's albums, favorite flag, description, people,
+  place and exact time, and what has been exported (if it gets lost, files already in place are
+  recognized by content). Add the folder, or a copy of it on another machine, to Photobox and
+  all of that comes back, also for files you've moved or renamed. A photo in several albums is
+  one file there and is listed in all of them.
 
 `--dry-run` lists what would be copied. Folders given to `export` are added and scanned first.
 Without folders it rescans the library's folders, or, if Photobox is running, exports that
@@ -123,23 +118,17 @@ This also serves Photobox to phones on your Wi-Fi or VPN, over HTTPS on port 456
 address. Nothing is reachable from the internet unless you forward a port yourself.
 
 1. On the computer, open Photobox and choose **Connect a phone** in the sidebar. It shows a QR
-   code with a one-time pairing code, valid for 10 minutes.
+   code with a one-time pairing code.
 2. Scan it with the phone's camera. The first time, the browser warns that the connection is not
    private, because Photobox uses its own certificate. Tap **Advanced**, then **Proceed**.
 3. Name the phone and tap **Connect**. The phone can now see your library.
-4. To install Photobox as an app, the phone has to trust that certificate once. The pairing page
-   explains how: download `photobox-ca.crt`, install it in Android Settings as a CA certificate,
-   and check that its fingerprint matches the one on the computer. Then use **Install app** in
-   the browser menu.
+4. To install Photobox as an app, install its certificate on the phone once (the pairing page
+   walks you through it), then choose **Install app** in the browser menu.
 
-What a paired phone can do: browse the timeline and albums, view photos and videos, and set
-favorites. Adding or removing folders, rescanning, pairing and the device list stay on the
-computer. **Connect a phone** lists the paired devices and when each was last seen, and
-disconnecting one locks it out immediately.
-
-The certificate authority lives in `~/.photobox/tls`. Photobox renews the server certificate
-when your addresses change, and the phone keeps trusting it. If you'd rather use a certificate
-browsers already trust, such as one from `tailscale cert`, pass `--tls-cert` and `--tls-key`.
+A paired phone can browse the timeline and albums, view photos and videos, and set favorites.
+Adding or removing folders, rescanning and pairing stay on the computer. The sidebar's
+**Devices** section lists paired devices and when each was last seen; disconnecting one locks
+it out immediately.
 
 ## Desktop app
 
@@ -147,9 +136,9 @@ browsers already trust, such as one from `tailscale cert`, pass `--tls-cert` and
 never freeze the window, and shows the same web UI in a native window. On top of
 the browser version it adds:
 
-- a native folder picker, ⌘O, and adding folders by dragging them onto the window
+- ⌘O, and adding folders by dragging them onto the window
 - Dock progress while importing
-- **Show in Finder**, with links opening in your normal browser
+- links that open in your normal browser
 - a window size and position that are remembered between launches
 - folder watching that keeps running after you close the window, until you quit with ⌘Q
 
@@ -169,6 +158,7 @@ it's opened from Finder.
 ```
 bin/photobox.js          CLI: serve / scan / export
 src/app.js               starts library + indexer + watcher + server; single-instance lock
+src/config.js            data folder, port, paths of the database and caches
 desktop/main.js          Electron shell: window, menu, native dialogs, Dock progress
 desktop/server-process.js  library server inside an Electron utility process
 desktop/preload.cjs      the small native API the UI may use (window.photobox)
@@ -177,6 +167,8 @@ src/indexer.js           walk → match sidecars → hash/dedupe → metadata �
 src/metadata.js          EXIF (exifr) and video metadata (ffprobe)
 src/dates.js             timestamp parsing, filename dates, GPS → time zone
 src/thumbs.js            thumbnails/previews (sharp, sips and ffmpeg fallbacks)
+src/media.js             which file types are photos and videos
+src/files.js             folder walking, the content fingerprint, path helpers
 src/db.js                SQLite schema + queries (node:sqlite, no native build)
 src/export.js            copy the library into <dest>/YYYY/MM/ + photobox-export.json
 src/manifest.js          reading photobox-export.json, for the export and the indexer
@@ -185,7 +177,7 @@ src/server.js            HTTP API: the localhost listener and the one for paired
 src/remote.js            pairing codes and device tokens
 src/tls.js               Photobox's own CA and server certificate for --listen
 public/                  the app: justified timeline, year scrubber, albums, viewer
-public/pair.html         the page a phone opens from the QR code
+public/pair.html, pair.js  the page a phone opens from the QR code
 public/sw.js             service worker: installable app, cached thumbnails
 ```
 
@@ -198,7 +190,13 @@ can't post to it from your browser.
 With `--listen`, a second listener serves other devices, over HTTPS only. Every request needs a
 paired device's token, except the pairing page and the CA download. Tokens are 256-bit random
 values sent as a cookie (HttpOnly, Secure, SameSite=Strict) or a bearer header. The database
-stores only their SHA-256. Pairing codes work once and expire after 10 minutes.
+stores only their SHA-256. Pairing codes work once and expire after 10 minutes. Errors are
+answered with a short JSON message, never a stack trace.
+
+The certificate authority lives in `~/.photobox/tls`. Photobox renews the server certificate
+when your addresses change, and a phone that trusts the CA keeps trusting it. To use a
+certificate browsers already trust instead, such as one from `tailscale cert`, pass `--tls-cert`
+and `--tls-key`.
 
 ## Not yet
 

@@ -45,8 +45,7 @@
     "files": [
       "desktop/**/*",
       "src/**/*",
-      "public/**/*",
-      "package.json"
+      "public/**/*"
     ],
     "asarUnpack": [
       "node_modules/sharp/**/*",

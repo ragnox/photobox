@@ -11,7 +11,7 @@ import { loadConfig } from '../src/config.js';
 import { Library } from '../src/db.js';
 import { Indexer } from '../src/indexer.js';
 import { createApp } from '../src/server.js';
-import { Pairing, hashToken } from '../src/remote.js';
+import { networkAccess, hashToken } from '../src/remote.js';
 import { ensureCertificates } from '../src/tls.js';
 
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
@@ -23,11 +23,9 @@ async function setup(t, { ttl } = {}) {
   const library = new Library(config.dbPath);
   const indexer = new Indexer(library, config);
   const watcher = { watchSource() {}, async unwatch() {} };
-  const tls = ensureCertificates(path.join(config.dataDir, 'tls'), ['localhost', '127.0.0.1']);
-  const network = {
-    pairing: new Pairing(library, { ttl }), tls, port: 0,
-    info: () => ({ urls: [`https://127.0.0.1:${network.port}`], fingerprint: tls.fingerprint }),
-  };
+  const network = networkAccess(config, library, { address: '127.0.0.1' });
+  if (ttl) network.pairing.ttl = ttl;
+  const { tls } = network;
   const deps = { library, indexer, watcher, config, network };
   const localServer = await listen(http.createServer(createApp(deps)));
   const remoteServer = await listen(https.createServer({ key: tls.key, cert: tls.cert }, createApp(deps, { remote: true })));
@@ -93,6 +91,14 @@ test('the network listener answers only paired devices, apart from the pairing p
   assert.deepEqual(ca.raw, Buffer.from(tls.caDer));
   assert.equal((await remote('POST', '/api/pair', { body: { code: 'guess' } })).status, 401);
   assert.equal((await remote('POST', '/api/pair', { body: { code: 42 } })).status, 401);
+
+  // Malformed input from an unpaired device gets a short JSON error: no stack trace, no paths.
+  const badCookie = await remote('GET', '/api/status', { cookie: 'photobox_device=%E0%A4%A' });
+  assert.equal(badCookie.status, 401);
+  const badJson = await remote('POST', '/api/pair', { body: '{bad' });
+  assert.equal(badJson.status, 400);
+  assert.ok(badJson.json?.error, 'a JSON error message');
+  assert.doesNotMatch(badJson.raw.toString(), /node_modules|\/Users\/|at [\w.]+ \(/);
 });
 
 test('a pairing code works once and is traded for a token that is only stored hashed', async (t) => {

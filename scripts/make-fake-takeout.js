@@ -4,14 +4,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { parseArgs } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 
 const run = promisify(execFile);
 
-export const CITIES = {
+const CITIES = {
   vienna: ['Vienna', 48.2082, 16.3738],
   salzburg: ['Salzburg', 47.8095, 13.055],
   hallstatt: ['Hallstatt', 47.5622, 13.6493],
@@ -86,7 +85,6 @@ export async function makeFakeTakeout(out, { bulk = 60 } = {}) {
   const gp1 = path.join(out, 'takeout-20251020T101500Z-001', 'Takeout', 'Google Photos');
   const gp2 = path.join(out, 'takeout-20251020T101500Z-002', 'Takeout', 'Google Photos');
   const camera = path.join(out, 'Camera Roll');
-  const expected = {};
 
   const shot = async (dir, name, { taken, city, jsonName = `${name}.json`, title = name, hue, size, exif, json = {}, label } = {}) => {
     const [width, height] = size ?? pick(SIZES);
@@ -94,45 +92,44 @@ export async function makeFakeTakeout(out, { bulk = 60 } = {}) {
     const day = new Date(taken * 1000).toISOString().slice(0, 10);
     await postcard(path.join(dir, name), { width, height, hue: hue ?? Math.floor(random() * 360), label: label ?? cityName, sub: `${day} · ${name}`, exif });
     if (jsonName) await writeJson(path.join(dir, jsonName), sidecar({ title, taken, city, ...json }));
-    return taken;
   };
 
   // --- Edge cases (takeout part 1) ---------------------------------------
   const y2019 = path.join(gp1, 'Photos from 2019');
-  expected['DSC_0001.JPG'] = await shot(y2019, 'DSC_0001.JPG', {
+  await shot(y2019, 'DSC_0001.JPG', {
     taken: ts('2019-07-13T08:15:00Z'), city: 'vienna', size: [1600, 1200], hue: 30,
     json: { description: 'Stephansdom at golden hour', favorited: true, people: ['Anna'] },
   });
-  expected['DSC_0002.JPG'] = await shot(y2019, 'DSC_0002.JPG', {
+  await shot(y2019, 'DSC_0002.JPG', {
     taken: ts('2019-07-14T10:00:00Z'), city: 'vienna', jsonName: 'DSC_0002.JPG.supplemental-metadata.json',
   });
-  expected['DSC_0003.JPG'] = await shot(y2019, 'DSC_0003.JPG', { taken: ts('2019-08-01T12:00:00Z'), city: 'salzburg' });
-  expected['DSC_0003(1).JPG'] = await shot(y2019, 'DSC_0003(1).JPG', {
+  await shot(y2019, 'DSC_0003.JPG', { taken: ts('2019-08-01T12:00:00Z'), city: 'salzburg' });
+  await shot(y2019, 'DSC_0003(1).JPG', {
     taken: ts('2019-08-02T15:30:00Z'), city: 'hallstatt', jsonName: 'DSC_0003.JPG(1).json', title: 'DSC_0003.JPG',
   });
-  expected['DSC_0004.JPG'] = await shot(y2019, 'DSC_0004.JPG', {
+  await shot(y2019, 'DSC_0004.JPG', {
     taken: ts('2019-08-05T09:00:00Z'), city: 'salzburg', jsonName: 'DSC_0004.JPG.supplemental-metadata.json',
   });
-  expected['DSC_0004(1).JPG'] = await shot(y2019, 'DSC_0004(1).JPG', {
+  await shot(y2019, 'DSC_0004(1).JPG', {
     taken: ts('2019-08-06T09:00:00Z'), city: 'innsbruck', jsonName: 'DSC_0004.JPG.supplemental-metadata(1).json', title: 'DSC_0004.JPG',
   });
-  expected['DSC_0005.JPG'] = await shot(y2019, 'DSC_0005.JPG', { taken: ts('2019-08-10T18:45:00Z'), city: 'dubrovnik', hue: 200 });
-  expected['DSC_0005-edited.JPG'] = await shot(y2019, 'DSC_0005-edited.JPG', {
-    taken: expected['DSC_0005.JPG'], city: 'dubrovnik', hue: 215, jsonName: null, label: 'Dubrovnik (edited)',
+  await shot(y2019, 'DSC_0005.JPG', { taken: ts('2019-08-10T18:45:00Z'), city: 'dubrovnik', hue: 200 });
+  await shot(y2019, 'DSC_0005-edited.JPG', {
+    taken: ts('2019-08-10T18:45:00Z'), city: 'dubrovnik', hue: 215, jsonName: null, label: 'Dubrovnik (edited)',
   });
-  expected['DSC_0006.JPG'] = await shot(y2019, 'DSC_0006.JPG', {
+  await shot(y2019, 'DSC_0006.JPG', {
     taken: ts('2019-08-11T07:20:00Z'), city: 'dubrovnik', jsonName: 'DSC_0006.JPG.supplemental-metadata.json',
   });
-  expected['DSC_0006-bearbeitet.JPG'] = await shot(y2019, 'DSC_0006-bearbeitet.JPG', {
-    taken: expected['DSC_0006.JPG'], city: 'dubrovnik', jsonName: null, label: 'Dubrovnik (bearbeitet)',
+  await shot(y2019, 'DSC_0006-bearbeitet.JPG', {
+    taken: ts('2019-08-11T07:20:00Z'), city: 'dubrovnik', jsonName: null, label: 'Dubrovnik (bearbeitet)',
   });
   const longName = 'Screenshot_20200314-153000_Some Very Long Application Name.png';
-  expected[longName] = await shot(y2019, longName, {
+  await shot(y2019, longName, {
     // Deliberately not the date in the file name: the sidecar must win.
     taken: ts('2019-09-01T11:11:00Z'), jsonName: 'Screenshot_20200314-153000_Some Very Long Appl.json', title: longName, size: [900, 1600],
   });
   const cafe = 'Café Central.jpg';
-  expected[cafe] = await shot(y2019, cafe.normalize('NFD'), {
+  await shot(y2019, cafe.normalize('NFD'), {
     taken: ts('2019-09-03T14:00:00Z'), city: 'vienna', jsonName: `${cafe}.json`.normalize('NFC'), title: cafe,
   });
   await shot(y2019, 'DSC_9999.JPG', { taken: ts('2019-09-04T10:00:00Z'), json: { trashed: true }, label: 'TRASHED - must not show' });
@@ -145,23 +142,20 @@ export async function makeFakeTakeout(out, { bulk = 60 } = {}) {
     '-vf', 'scale=480:-2,zoompan=z=\'min(zoom+0.004,1.15)\':d=30:s=480x640', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
     path.join(y2019, 'IMG_1234.MP4')]);
   await writeJson(path.join(y2019, 'IMG_1234.HEIC.json'), sidecar({ title: 'IMG_1234.HEIC', taken: ts('2019-09-20T17:30:00Z'), city: 'lisbon' }));
-  expected['IMG_1234.HEIC'] = ts('2019-09-20T17:30:00Z');
 
   // A real video with its own sidecar.
   await run('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=24', '-t', '8',
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(y2019, 'VID_20190820_183000.mp4')]);
   await writeJson(path.join(y2019, 'VID_20190820_183000.mp4.json'), sidecar({ title: 'VID_20190820_183000.mp4', taken: ts('2019-08-20T16:30:00Z'), city: 'hallstatt' }));
-  expected['VID_20190820_183000.mp4'] = ts('2019-08-20T16:30:00Z');
   await fs.rm(still);
 
   // Split zip parts: photo in part 1, its sidecar in part 2.
-  expected['DSC_1001.JPG'] = await shot(path.join(gp1, 'Photos from 2018'), 'DSC_1001.JPG', { taken: ts('2018-12-24T18:00:00Z'), city: 'innsbruck', jsonName: null, label: 'Christmas' });
+  await shot(path.join(gp1, 'Photos from 2018'), 'DSC_1001.JPG', { taken: ts('2018-12-24T18:00:00Z'), city: 'innsbruck', jsonName: null, label: 'Christmas' });
   await writeJson(path.join(gp2, 'Photos from 2018', 'DSC_1001.JPG.json'), sidecar({ title: 'DSC_1001.JPG', taken: ts('2018-12-24T18:00:00Z'), city: 'innsbruck' }));
 
   // Album (part 2) holding a duplicate of DSC_0001.JPG plus its own photos.
   const album = path.join(gp2, 'Summer in Vienna');
   await writeJson(path.join(album, 'metadata.json'), { title: 'Summer in Vienna ☀️', description: '', access: 'protected', date: { timestamp: String(ts('2019-07-20T00:00:00Z')), formatted: '' } });
-  await fs.mkdir(album, { recursive: true });
   await fs.copyFile(path.join(y2019, 'DSC_0001.JPG'), path.join(album, 'DSC_0001.JPG'));
   await fs.copyFile(path.join(y2019, 'DSC_0001.JPG.json'), path.join(album, 'DSC_0001.JPG.json'));
   await fs.copyFile(path.join(y2019, 'DSC_0002.JPG'), path.join(album, 'DSC_0002.JPG'));
@@ -177,7 +171,6 @@ export async function makeFakeTakeout(out, { bulk = 60 } = {}) {
     const name = `DSC_3${String(i).padStart(3, '0')}.JPG`;
     const dir = path.join(gp1, 'Photos from 2023');
     await shot(dir, name, { taken: ts(`2023-04-0${1 + i}T0${i}:30:00Z`), city: i < 5 ? 'tokyo' : 'kyoto', hue: 330 + i * 4 });
-    await fs.mkdir(japan, { recursive: true });
     await fs.copyFile(path.join(dir, name), path.join(japan, name));
     await fs.copyFile(path.join(dir, `${name}.json`), path.join(japan, `${name}.json`));
   }
@@ -213,7 +206,6 @@ export async function makeFakeTakeout(out, { bulk = 60 } = {}) {
       },
     });
   }
-  return { expected, takeoutRoot: out, camera };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

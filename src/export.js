@@ -6,11 +6,9 @@
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
-import { quickHash, walk } from './indexer.js';
-import { MEDIA_EXT, mediaKind } from './media.js';
+import { quickHash, walk, statOrNull, isInside, relPosix } from './files.js';
+import { mediaKind, stripMediaExt } from './media.js';
 import { MANIFEST, readManifest } from './manifest.js';
-
-export { MANIFEST };
 
 // Characters that Windows, exFAT or FAT32 drives can't store in a file name.
 const UNSAFE = /[<>:"/\\|?*\u0000-\u001f]/g;
@@ -18,32 +16,18 @@ const MAX_STEM_BYTES = 200;
 const COPY_WORKERS = 4;
 const SAVE_EVERY = 250;
 
-async function statOrNull(file) {
-  try {
-    return await fs.stat(file);
-  } catch {
-    return null;
-  }
-}
-
 const full = (dest, rel) => path.join(dest, ...rel.split('/'));
-const isInside = (file, dir) => {
-  const rel = path.relative(dir, file);
-  return Boolean(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-};
 const nameKey = (rel) => rel.normalize('NFC').toLowerCase();
 
 /** File name stem to export under: the photo's real name, made safe for any drive. */
 export function safeStem(filename) {
-  const ext = path.extname(filename);
-  let stem = MEDIA_EXT.has(ext.toLowerCase()) ? filename.slice(0, -ext.length) : filename;
-  stem = stem.normalize('NFC').replace(UNSAFE, '_').replace(/^[. ]+|[. ]+$/g, '');
+  let stem = stripMediaExt(filename).normalize('NFC').replace(UNSAFE, '_').replace(/^[. ]+|[. ]+$/g, '');
   while (Buffer.byteLength(stem) > MAX_STEM_BYTES) stem = [...stem].slice(0, -1).join('');
   return stem || 'untitled';
 }
 
 async function writeManifest(dest, items) {
-  const sorted = Object.fromEntries(Object.entries(items).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  const sorted = Object.fromEntries(Object.keys(items).sort().map((rel) => [rel, items[rel]]));
   const albums = {};
   for (const [rel, item] of Object.entries(sorted)) for (const name of item.albums ?? []) (albums[name] ??= []).push(rel);
   const data = { version: 1, generator: 'photobox', exportedAt: new Date().toISOString(), albums, items: sorted };
@@ -101,7 +85,7 @@ async function findMoved(dest, items, pending, sources) {
   const listed = new Set(Object.keys(items).map((rel) => rel.normalize('NFC')));
   const originals = sources.filter((dir) => isInside(dir, dest));
   for await (const file of walk(dest)) {
-    const rel = path.relative(dest, file).split(path.sep).join('/');
+    const rel = relPosix(dest, file);
     if (!mediaKind(file) || listed.has(rel.normalize('NFC')) || originals.some((dir) => isInside(file, dir))) continue;
     const stat = await statOrNull(file);
     if (!stat || (sizes && !sizes.has(stat.size))) continue;
@@ -145,7 +129,7 @@ async function copyInto(source, target, takenAt) {
 
 /**
  * Export every media item in the library to <dest>/YYYY/MM/. Returns
- * { total, copied, present, skipped: [{ name, reason }], planned: [{ source, rel }] }.
+ * { total, copied, present, skipped: [{ name, reason }], planned: [{ source, rel, takenAt, name }] }.
  * With dryRun nothing is written; `planned` lists what would be copied.
  */
 export async function exportLibrary(library, dest, { dryRun = false, onProgress = () => {} } = {}) {
@@ -169,11 +153,10 @@ export async function exportLibrary(library, dest, { dryRun = false, onProgress 
   const reserved = new Set([...Object.keys(items), ...exported.values()].map(nameKey));
   const placed = new Map(); // media id -> rel, so a live photo's clip can sit next to its still
   const planned = [];
-  const result = { total: 0, copied: 0, present: 0, skipped: [], planned };
+  const result = { total: all.length, copied: 0, present: 0, skipped: [], planned };
 
-  for (const m of all) {
-    result.total++;
-    if (result.total % 100 === 0) onProgress({ phase: 'checking', done: result.total, total: all.length });
+  for (const [i, m] of all.entries()) {
+    if ((i + 1) % 100 === 0) onProgress({ phase: 'checking', done: i + 1, total: all.length });
     const stillRel = m.live_of ? placed.get(m.live_of) : null;
     const known = exported.get(m.hash);
     if (known) {

@@ -1,10 +1,10 @@
 import path from 'node:path';
 
-export const IMAGE_EXT = new Set([
+const IMAGE_EXT = new Set([
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.avif', '.tif', '.tiff', '.bmp',
   '.dng', '.cr2', '.cr3', '.nef', '.arw', '.orf', '.rw2', '.raf', '.srw', '.pef',
 ]);
-export const VIDEO_EXT = new Set([
+const VIDEO_EXT = new Set([
   '.mp4', '.mov', '.m4v', '.3gp', '.avi', '.mkv', '.webm', '.mts', '.m2ts', '.wmv', '.mpg', '.mpeg',
 ]);
 export const MEDIA_EXT = new Set([...IMAGE_EXT, ...VIDEO_EXT]);
@@ -21,6 +21,8 @@ export function mediaKind(file) {
   return null;
 }
 
-export function isHidden(file) {
-  return path.basename(file).startsWith('.');
+/** "IMG_1.jpg" -> "IMG_1"; names without a media extension stay as they are. */
+export function stripMediaExt(name) {
+  const ext = path.extname(name);
+  return MEDIA_EXT.has(ext.toLowerCase()) ? name.slice(0, -ext.length) : name;
 }

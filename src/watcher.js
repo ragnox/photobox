@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { watch } from 'chokidar';
-import { mediaKind, isHidden } from './media.js';
-import { takeoutFolderKey } from './takeout/sidecar.js';
+import { mediaKind } from './media.js';
+import { isSkipped } from './files.js';
+import { isInTakeout } from './takeout/sidecar.js';
 import { MANIFEST } from './manifest.js';
 
 const DEBOUNCE_MS = 1000;
@@ -26,7 +27,8 @@ export class SourceWatcher {
     if (this.watchers.has(source.id)) return;
     const watcher = watch(source.path, {
       ignoreInitial: true,
-      ignored: (file, stats) => isHidden(file) || (stats?.isFile() && !relevant(file)),
+      // The same folders a scan skips: hidden ones, Synology's @eaDir thumbnails, recycle bins.
+      ignored: (file, stats) => isSkipped(path.basename(file)) || (stats?.isFile() && !relevant(file)),
       awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 250 },
     });
     watcher
@@ -69,15 +71,16 @@ export class SourceWatcher {
     this.pending.delete(source.id);
     if (!batch || !this.watchers.has(source.id)) return;
     // If the whole source vanished it was most likely unmounted, not emptied.
-    if (batch.removed.size && fs.existsSync(source.path)) this.indexer.removePaths([...batch.removed]);
+    const failed = (err) => this.indexer.error(source.path, err);
+    if (batch.removed.size && fs.existsSync(source.path)) this.indexer.removePaths([...batch.removed]).catch(failed);
     if (!batch.changed.size) return;
     const dirs = [...new Set([...batch.changed].map((f) => path.dirname(f)))];
     // Inside a Takeout export a photo's sidecar can sit in another zip part, and an export
     // manifest describes files in every folder below it, so look at everything.
-    if (dirs.some((d) => takeoutFolderKey(d) !== d) || [...batch.changed].some((f) => path.basename(f) === MANIFEST)) {
-      this.indexer.scanSource(source);
+    if (dirs.some(isInTakeout) || [...batch.changed].some((f) => path.basename(f) === MANIFEST)) {
+      this.indexer.scanSource(source).catch(failed);
     } else {
-      this.indexer.scanFolders(source, dirs);
+      this.indexer.scanFolders(source, dirs).catch(failed);
     }
   }
 }

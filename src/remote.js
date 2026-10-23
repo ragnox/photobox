@@ -2,6 +2,8 @@
 // codes made on this computer, and the device tokens they are traded for.
 import crypto from 'node:crypto';
 import os from 'node:os';
+import path from 'node:path';
+import { ensureCertificates, loadCertificates } from './tls.js';
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const SEEN_EVERY_MS = 60 * 1000;
@@ -16,8 +18,9 @@ const deviceName = (name) => String(name ?? '').replace(/\s+/g, ' ').trim().slic
 export function requestToken(req) {
   const auth = req.headers.authorization;
   if (auth?.startsWith('Bearer ')) return auth.slice(7).trim();
+  // Tokens are base64url, written to the cookie as they are; nothing to decode.
   const m = (req.headers.cookie ?? '').match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
-  return m ? decodeURIComponent(m[1]) : null;
+  return m ? m[1] : null;
 }
 
 export const tokenCookie = (token) =>
@@ -69,8 +72,34 @@ export class Pairing {
 }
 
 /** IPv4 addresses other devices can reach this computer at: Wi-Fi, Ethernet, VPN. */
-export function networkAddresses() {
+function networkAddresses() {
   return Object.values(os.networkInterfaces()).flat()
     .filter((a) => a && a.family === 'IPv4' && !a.internal)
     .map((a) => a.address);
+}
+
+/**
+ * What the network listener needs: pairing, the certificate, and the URLs to
+ * reach it at. `address` is one address, or 0.0.0.0 for every network this
+ * computer is on. Uses your own certificate if given, otherwise one from
+ * Photobox's own CA. `port` is filled in once the listener is up.
+ */
+export function networkAccess(config, library, { address, tlsCert, tlsKey }) {
+  const everywhere = address === '0.0.0.0' || address === '::';
+  const addresses = everywhere ? networkAddresses() : [address];
+  const tls = tlsCert
+    ? loadCertificates(tlsCert, tlsKey)
+    : ensureCertificates(path.join(config.dataDir, 'tls'), ['localhost', os.hostname(), ...addresses]);
+  // A brought certificate is only valid for its own names; ours covers the addresses.
+  const hosts = tls.ca ? addresses : tls.names.filter((n) => !n.startsWith('*'));
+  const network = {
+    pairing: new Pairing(library),
+    tls,
+    port: null,
+    info: () => ({
+      urls: hosts.map((h) => `https://${h.includes(':') ? `[${h}]` : h}:${network.port}`),
+      fingerprint: tls.fingerprint,
+    }),
+  };
+  return network;
 }

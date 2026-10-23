@@ -8,7 +8,6 @@ try {
   // Port 0: let the OS pick, so the desktop app never collides with a CLI server.
   const photobox = await startPhotobox({ port: 0 });
   send({ type: 'ready', url: photobox.url });
-  photobox.scanned.catch((err) => console.error(err));
 
   process.parentPort.on('message', async ({ data }) => {
     if (data?.type !== 'shutdown') return;

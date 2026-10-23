@@ -40,15 +40,10 @@ moving a real library (an Android phone plus a Google Takeout) off Google.
   photos, zips with other products (Drive, Mail, ...), and sometimes a large video
   delivered as a loose file next to the zips. Browsers may start several parallel
   part downloads only slowly or not at all, so each part may have to be clicked.
-- **The metadata is scattered.** The real date, place, description, favorite flag
-  and people sit in JSON sidecars whose names often don't match the photo:
-  `.supplemental-metadata.json`, counters moved behind the extension
-  (`IMG_1.jpg(1).json`), names cut at about 51 characters, localized `-edited`
-  suffixes, live-photo videos using the still's sidecar, NFD/NFC differences.
-  Without the sidecars most photos fall back to the export date.
-  `src/takeout/sidecar.js` handles all of these and is unit-tested.
-- **Albums are copies.** A photo in an album appears once in its year folder and
-  again in every album folder; naive importers duplicate it.
+- **The metadata is scattered, and albums are copies.** Dates, places and the rest
+  sit in JSON sidecars whose names often don't match the photo, and a photo in an
+  album appears again in every album folder. The README's "What it handles" lists
+  every case `src/takeout/sidecar.js` deals with.
 - **Not everything is exported.** The Locked Folder is left out. Trashed items
   are included and must be skipped.
 - **Deleting is coupled to the phone.** With backup on, deleting a photo in
@@ -71,11 +66,11 @@ moving a real library (an Android phone plus a Google Takeout) off Google.
   Takeout into one deduplicated `YYYY/MM` library, with `photobox-export.json` holding albums,
   favorites, people, places and dates. Adding the folder back to Photobox
   restores all of it, also after files were moved or renamed.
-- **Viewing:** the Photobox web app shows the timeline, albums and viewer at
-  `http://localhost:4567`. It is localhost-only today.
+- **Viewing:** the Photobox web app shows the timeline, albums and viewer, and since
+  phase 1 a paired phone can browse it too, over HTTPS on your Wi-Fi or VPN.
 
-What's missing is the phone side: browsing the library from the phone, a backup
-that confirms each photo arrived intact, and a safe "free up space".
+What's missing is a backup from the phone that confirms each photo arrived intact,
+and a safe "free up space".
 
 ## Existing open-source options
 
@@ -88,15 +83,8 @@ that confirms each photo arrived intact, and a safe "free up space".
 | Syncthing-Fork (F-Droid, GitHub) | Android Syncthing client | Moves files reliably. It knows nothing about photos, so it can't say "safe to delete", and it doesn't browse. |
 | [Fossify Gallery](https://github.com/FossifyOrg/Gallery), [Aves](https://github.com/deckerst/aves) | On-device galleries | Good replacements for the Google Photos app as the phone's gallery. Neither backs up. |
 
-**If you want everything today:** run Immich and point it at `~/Photos` as a
-read-only external library. You get faces and search without handing it
-ownership of the files. New phone photos would still need to reach `~/Photos`
-through Syncthing.
-
-**What this plan adds instead:** the files-first model all the way to the phone.
-The library stays plain folders that Photobox owns no more than any other app,
-the host is a single small process, and the phone app's job is narrow: back up
-with proof, browse, and free space safely.
+This plan takes the files-first model all the way to the phone, with a phone app
+whose job is narrow: back up with proof, browse, and free space safely.
 
 ## Architecture
 
@@ -127,16 +115,12 @@ with proof, browse, and free space safely.
 
 ### A. Library host (Photobox, Node)
 
-1. **Listen beyond localhost, safely.** `photobox serve --listen <address>`,
-   opt-in. Every API route requires a device token except on loopback.
-   Rejecting non-localhost `Host` headers stays as it is for loopback.
-2. **Device pairing.** The desktop shows a QR code with a one-time code and the
-   server's certificate fingerprint. The phone exchanges it for a long-lived
-   per-device token, stored hashed on the server. Devices are listed and
-   revocable in the UI.
-3. **Transport security.** WireGuard already encrypts. For plain Wi-Fi, a
-   self-signed certificate created on first run, pinned by fingerprint during
-   pairing. No public CA, no domain needed.
+1. **Listen beyond localhost, safely.** Done: `photobox serve --listen <address>`
+   adds a separate HTTPS listener that answers only paired devices (see the README).
+2. **Device pairing.** Done: QR code with a one-time code, traded for a per-device
+   token that the host stores hashed; devices are listed and can be disconnected.
+3. **Transport security.** Done: Photobox's own CA, installed on the phone once, or
+   your own certificate. The native app (B7) pins the CA's fingerprint from the QR code.
 4. **Resumable uploads.** The [tus](https://tus.io) protocol (open standard,
    maintained Node server) at `/api/uploads`. Metadata: file name, size,
    capture time, the phone's MediaStore ID and the SHA-256 computed on the
@@ -153,9 +137,7 @@ with proof, browse, and free space safely.
    the date, place, description, rating/favorite, keywords for albums and
    people, so digiKam, darktable, Lightroom and Immich can read them too.
    `photobox-export.json` stays as the complete record.
-8. **Installable web app (PWA).** A manifest and service worker, plus a
-   touch-friendly viewer (swipe, pinch). Together with item 1 this gives a phone
-   view of the library before any Android code exists.
+8. **Installable web app (PWA).** Done: manifest, service worker and icons.
 
 ### B. Android app (Kotlin, Jetpack Compose)
 
@@ -223,19 +205,17 @@ with proof, browse, and free space safely.
 | Phase | Delivers | Done when |
 | --- | --- | --- |
 | **0. Today, no new code** | Syncthing-Fork on the phone with safe computer-side settings, Photobox library, daily export, off-site restic backup, Takeout imported, Google Photos backup turned off | A photo taken on the phone is in `~/Photos/YYYY/MM` the next morning, and Google holds no copy |
-| **1. Library on the phone** | A1–A3, A8: authenticated LAN/VPN access and the installable web app | The paired phone scrolls the full timeline over Wi-Fi and WireGuard, and an unpaired device gets 401 on every route |
-
-**Phase 1 status (October 2026):** `photobox serve --listen` and pairing by QR code are built. So are
-device tokens stored as hashes, the host-only rules, Photobox's own CA with automatic renewal of the
-server certificate, and the installable web app (manifest, service worker, icons). All of it is
-covered by `test/remote.test.js` and was checked end to end with curl over Wi-Fi. Still open: trying
-it on a real phone over Wi-Fi and WireGuard, and turning on `--listen` from the desktop app.
+| **1. Library on the phone** | A1–A3, A8: authenticated LAN/VPN access and the installable web app | The paired phone scrolls the full timeline over Wi-Fi and WireGuard; an unpaired device gets 401 from the API and the pairing page otherwise |
 | **2. Backup with proof** | A4–A6, B1–B5, B7: the Android backup app and the scheduled export | A new photo reaches the host within minutes on Wi-Fi. A 10 GB first backup survives airplane mode, reboots and the daily limit. Host and phone SHA-256 match for every item, GPS included. "Free up space" offers only confirmed items |
 | **3. Browse and organize natively** | B6, A7: native timeline and albums, favorites and albums edited from the phone, XMP sidecars | Favorites set on the phone show up in `photobox-export.json` and the XMP files, and survive an export/re-import round trip |
 | **4. Smart features, privately** | Search by content and face grouping with open models running on the host, a map on OpenStreetMap, offline place names | Search for "beach" returns beach photos without any network call leaving your network |
 
 Phase 0 is mostly in place on the first machine already. Phases 1 and 2 are the
 core: after them, the phone no longer needs Google Photos for anything.
+
+**Phase 1 status (October 2026):** built and covered by `test/remote.test.js`, and checked end
+to end with curl over Wi-Fi. Still open: a real phone over Wi-Fi and WireGuard, and `--listen`
+in the desktop app. Phase 2 is in progress on the `wip/phase-2` branch.
 
 ## Repository layout
 
@@ -255,14 +235,9 @@ Split `android/` into its own repository once the API is versioned (`/api/v1`).
 ## Security and privacy
 
 - **No telemetry**, no crash reporting to third parties, no Google Play Services.
-- **Device tokens** are revocable, stored hashed on the host and kept in the
-  Android Keystore on the phone.
-- **TLS** with the pinned self-signed certificate, or WireGuard. Both are fine;
-  plain HTTP only on loopback.
+- **Device tokens** are kept in the Android Keystore on the phone.
 - **Uploads can't escape the inbox.** The server picks the file name and path,
   and rejects path components from the client.
-- **Deletions only flow phone-ward and only on request.** The host never deletes
-  originals because the phone did.
 
 ## Risks and open questions
 

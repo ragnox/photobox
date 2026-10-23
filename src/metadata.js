@@ -21,19 +21,23 @@ export async function readImageMeta(file) {
     parseTimestamp(tags.DateTimeOriginal, tags.OffsetTimeOriginal ?? tags.OffsetTime) ??
     parseTimestamp(tags.CreateDate, tags.OffsetTimeDigitized ?? tags.OffsetTime) ??
     parseTimestamp(tags.ModifyDate, tags.OffsetTime);
-  const lat = Number.isFinite(tags.latitude) ? tags.latitude : null;
-  const lon = Number.isFinite(tags.longitude) ? tags.longitude : null;
+  const place = location(tags.latitude, tags.longitude);
   let width = tags.ExifImageWidth ?? tags.ImageWidth ?? null;
   let height = tags.ExifImageHeight ?? tags.ImageHeight ?? null;
   if (tags.Orientation >= 5 && tags.Orientation <= 8) [width, height] = [height, width];
   return {
     date,
-    lat: lat === 0 && lon === 0 ? null : lat,
-    lon: lat === 0 && lon === 0 ? null : lon,
+    ...place,
     camera: cameraName(tags.Make, tags.Model),
     width,
     height,
   };
+}
+
+/** { lat, lon } when both are numbers and not 0/0, which cameras and Google write for "no location". */
+function location(lat, lon) {
+  const known = Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
+  return { lat: known ? lat : null, lon: known ? lon : null };
 }
 
 function cameraName(make, model) {
@@ -72,8 +76,7 @@ export async function readVideoMeta(file) {
   const duration = Number(probe.format?.duration);
   return {
     date,
-    lat: loc ? Number(loc[1]) : null,
-    lon: loc ? Number(loc[2]) : null,
+    ...(loc ? location(Number(loc[1]), Number(loc[2])) : { lat: null, lon: null }),
     camera: cameraName(tags['com.apple.quicktime.make'], tags['com.apple.quicktime.model']),
     width,
     height,

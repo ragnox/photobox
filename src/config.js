@@ -2,8 +2,11 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
+/** Where the library lives unless told otherwise; the CLI and the desktop app share it. */
+export const defaultDataDir = () => path.resolve(process.env.PHOTOBOX_DATA ?? path.join(os.homedir(), '.photobox'));
+
 export function loadConfig(overrides = {}) {
-  const dataDir = path.resolve(overrides.dataDir ?? process.env.PHOTOBOX_DATA ?? path.join(os.homedir(), '.photobox'));
+  const dataDir = overrides.dataDir ? path.resolve(overrides.dataDir) : defaultDataDir();
   const config = {
     dataDir,
     dbPath: path.join(dataDir, 'library.db'),

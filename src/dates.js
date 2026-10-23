@@ -1,28 +1,28 @@
 // Dates are kept twice: an instant (epoch ms) for sorting and the wall-clock
 // time where the photo was taken ("2019-07-13 10:15:00") for display/grouping.
-// When only one is known, the other is derived using this machine's time zone.
+// When only the instant is known, the wall clock comes from the time zone at the
+// photo's location (zoneAt), or this machine's zone without one; a wall clock
+// without an offset is read in this machine's zone (localToInstant).
 
 import tzlookup from '@photostructure/tz-lookup';
 
 const pad = (n) => String(n).padStart(2, '0');
+// How much we trust each date source; better information replaces worse.
+export const DATE_RANK = { exif: 4, takeout: 4, filename: 2, upload: 1, file: 0 };
 const MIN_YEAR = 1990;
 const formatters = new Map();
 
 /** Wall-clock time of an instant, in the given IANA zone or this machine's zone. */
 export function formatLocal(ms, timeZone = null) {
-  if (timeZone) {
-    let fmt = formatters.get(timeZone);
-    if (!fmt) {
-      fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-      });
-      formatters.set(timeZone, fmt);
-    }
-    const p = Object.fromEntries(fmt.formatToParts(ms).map(({ type, value }) => [type, value]));
-    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+  let fmt = formatters.get(timeZone ?? '');
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone ?? undefined, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    formatters.set(timeZone ?? '', fmt);
   }
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const p = Object.fromEntries(fmt.formatToParts(ms).map(({ type, value }) => [type, value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
 }
 
 /** IANA time zone at a location, e.g. "Asia/Tokyo". */
@@ -42,7 +42,8 @@ export function localToInstant(local) {
 
 function valid(y, mo, d, h = 0, mi = 0, s = 0) {
   const nextYear = new Date().getFullYear() + 1;
-  return y >= MIN_YEAR && y <= nextYear && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h < 24 && mi < 60 && s < 61;
+  const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return y >= MIN_YEAR && y <= nextYear && mo >= 1 && mo <= 12 && d >= 1 && d <= daysInMonth && h < 24 && mi < 60 && s < 61;
 }
 
 function normalizeOffset(offset) {
@@ -64,7 +65,7 @@ export function parseTimestamp(value, offset = null) {
   const local = `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${pad(s)}`;
   const zone = m[7]?.toUpperCase() === 'Z' ? 'Z' : normalizeOffset(m[7] ?? offset);
   if (!zone) return { local, instant: null };
-  const instant = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${pad(s)}${zone === 'Z' ? 'Z' : zone}`);
+  const instant = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${pad(s)}${zone}`);
   return { local: zone === 'Z' ? null : local, instant };
 }
 

@@ -4,10 +4,9 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { execFile } from 'node:child_process';
 import { loadConfig } from '../src/config.js';
-import { Library } from '../src/db.js';
-import { Indexer } from '../src/indexer.js';
-import { startPhotobox, scanAll, runningInstance, AlreadyRunning } from '../src/app.js';
-import { exportLibrary, MANIFEST } from '../src/export.js';
+import { startPhotobox, openLibrary, scanAll, runningInstance, AlreadyRunning } from '../src/app.js';
+import { exportLibrary } from '../src/export.js';
+import { MANIFEST } from '../src/manifest.js';
 
 const USAGE = `photobox - your photos, on your disk
 
@@ -17,8 +16,9 @@ const USAGE = `photobox - your photos, on your disk
       With --listen, phones can pair and browse the library over HTTPS on
       <address> (0.0.0.0 for every network, or e.g. a WireGuard address).
 
-  photobox scan <folders...>
+  photobox scan [folders...]
       Index once without starting the server, then print a summary.
+      Without folders it rescans every folder the library already has.
 
   photobox export <dest> [folders...] [--dry-run]
       Copy every photo and video into <dest>/YYYY/MM/, once each, dated by when it
@@ -52,25 +52,31 @@ const { values: opts, positionals } = parseArgs({
   },
 });
 
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+/** `fn`, but at most once a second. */
+function throttle(fn) {
+  let last = 0;
+  return (...args) => {
+    if (Date.now() - last < 1000) return;
+    last = Date.now();
+    fn(...args);
+  };
+}
+
 const [command = 'serve', ...args] = positionals;
 const dest = command === 'export' && args.length ? path.resolve(args.shift()) : null;
 if (opts.help || !['serve', 'scan', 'export'].includes(command) || (command === 'export' && !dest)) {
   console.log(USAGE);
   process.exit(opts.help ? 0 : 1);
 }
-
-if (Boolean(opts['tls-cert']) !== Boolean(opts['tls-key'])) {
-  console.error('--tls-cert and --tls-key go together');
-  process.exit(1);
-}
+if (Boolean(opts['tls-cert']) !== Boolean(opts['tls-key'])) fail('--tls-cert and --tls-key go together');
 
 const folders = args.map((f) => path.resolve(f));
-for (const dir of folders) {
-  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
-    console.error(`Not a folder: ${dir}`);
-    process.exit(1);
-  }
-}
+for (const dir of folders) if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) fail(`Not a folder: ${dir}`);
 
 const openBrowser = (url) => opts.open && process.platform === 'darwin' && execFile('open', [url]);
 const printScan = (source, { files, added, offline }) => {
@@ -78,22 +84,13 @@ const printScan = (source, { files, added, offline }) => {
 };
 
 function logProgress(indexer) {
-  let last = 0;
-  indexer.on('status', (s) => {
-    if (s.phase !== 'indexing' || Date.now() - last < 1000) return;
-    last = Date.now();
-    console.log(`  ${s.phase} ${s.source}: ${s.done}/${s.total} (${s.added} new)`);
-  });
+  const log = throttle((s) => console.log(`  ${s.phase} ${s.source}: ${s.done}/${s.total} (${s.added} new)`));
+  indexer.on('status', (s) => s.phase === 'indexing' && log(s));
 }
 
 async function runExport(library) {
-  let last = 0;
-  const onProgress = ({ phase, done, total }) => {
-    if (Date.now() - last < 1000) return;
-    last = Date.now();
-    console.log(`  ${phase} ${done}/${total}`);
-  };
   const dryRun = opts['dry-run'];
+  const onProgress = throttle(({ phase, done, total }) => console.log(`  ${phase} ${done}/${total}`));
   const result = await exportLibrary(library, dest, { dryRun, onProgress });
   if (dryRun) {
     console.log(`Would copy ${result.planned.length} of ${result.total} items to ${dest} (${result.present} already there)`);
@@ -107,46 +104,42 @@ async function runExport(library) {
   return result.skipped.length ? 1 : 0;
 }
 
-if (command === 'scan' || command === 'export') {
+/** `scan` and `export`: index the library's folders (unless a running Photobox does that), then export. */
+async function scanOrExport() {
   const config = loadConfig({ dataDir: opts.data });
   const other = runningInstance(config);
   // A running Photobox keeps the library up to date itself; an export can just read it.
-  if (other && (command === 'scan' || folders.length)) {
-    console.error(`Photobox is running at ${other.url} - add folders there, it will index them.`);
-    process.exit(1);
-  }
-  const library = new Library(config.dbPath);
-  if (other) {
-    console.log(`Exporting the library of the Photobox running at ${other.url}`);
-  } else {
-    for (const dir of folders) library.addSource(dir);
-    if (!library.sources().length) {
-      console.log(USAGE);
-      process.exit(1);
+  if (other && (command === 'scan' || folders.length)) fail(`Photobox is running at ${other.url} - add folders there, it will index them.`);
+  const { library, indexer } = openLibrary(config, other ? [] : folders);
+  try {
+    if (other) {
+      console.log(`Exporting the library of the Photobox running at ${other.url}`);
+    } else {
+      if (!library.sources().length) {
+        console.log(USAGE);
+        return 1;
+      }
+      logProgress(indexer);
+      await scanAll(library, indexer, printScan);
+      const stats = library.stats();
+      console.log(`Library: ${stats.photos} photos, ${stats.videos} videos, ${stats.live} live photo clips, ${library.albums().length} albums`);
+      for (const e of indexer.status.errors.slice(0, 10)) console.log(`  ! ${e.file}: ${e.message}`);
     }
-    const indexer = new Indexer(library, config);
-    logProgress(indexer);
-    await scanAll(library, indexer, printScan);
-    const stats = library.stats();
-    console.log(`Library: ${stats.photos} photos, ${stats.videos} videos, ${stats.live} live photo clips, ${library.albums().length} albums`);
-    for (const e of indexer.status.errors.slice(0, 10)) console.log(`  ! ${e.file}: ${e.message}`);
+    return command === 'export' ? await runExport(library) : 0;
+  } catch (err) {
+    console.error(err.message);
+    return 1;
+  } finally {
+    library.close();
   }
-  if (command === 'export') {
-    try {
-      process.exitCode = await runExport(library);
-    } catch (err) {
-      console.error(err.message);
-      process.exitCode = 1;
-    }
-  }
-  library.close();
-} else {
+}
+
+async function serve() {
   let photobox;
   try {
     photobox = await startPhotobox({
       dataDir: opts.data, port: opts.port, folders, onScanned: printScan,
-      listen: opts.listen, remotePort: opts['remote-port'] ? Number(opts['remote-port']) : undefined,
-      tlsCert: opts['tls-cert'], tlsKey: opts['tls-key'],
+      listen: opts.listen, remotePort: opts['remote-port'], tlsCert: opts['tls-cert'], tlsKey: opts['tls-key'],
     });
   } catch (err) {
     if (err instanceof AlreadyRunning) {
@@ -154,8 +147,7 @@ if (command === 'scan' || command === 'export') {
       openBrowser(err.url);
       process.exit(0);
     }
-    console.error(err.code === 'EADDRINUSE' ? `Port ${opts.port ?? 4567} is busy - try --port` : err.message);
-    process.exit(1);
+    fail(err.code === 'EADDRINUSE' ? `Port ${err.port} is busy - try ${opts.listen ? '--port or --remote-port' : '--port'}` : err.message);
   }
   console.log(`Photobox running at ${photobox.url}  (library: ${photobox.config.dataDir})`);
   if (photobox.network) {
@@ -165,7 +157,6 @@ if (command === 'scan' || command === 'export') {
   }
   logProgress(photobox.indexer);
   openBrowser(photobox.url);
-  photobox.scanned.catch((err) => console.error(err));
 
   const shutdown = async () => {
     await photobox.close();
@@ -174,3 +165,6 @@ if (command === 'scan' || command === 'export') {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
+
+if (command === 'serve') await serve();
+else process.exitCode = await scanOrExport();

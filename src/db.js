@@ -280,18 +280,13 @@ export class Library {
     const stem = (p) => p.replace(/\.[^./]+$/, '').normalize('NFC').toLowerCase();
     const stills = new Map();
     for (const r of rows) if (r.kind === 'image') stills.set(stem(r.path), r.media_id);
-    let linked = 0;
     this.tx(() => {
       for (const r of rows) {
         if (r.kind !== 'video' || r.live_of || (r.duration != null && r.duration > 6)) continue;
         const still = stills.get(stem(r.path));
-        if (still) {
-          this.q('UPDATE media SET live_of = ? WHERE id = ?').run(still, r.media_id);
-          linked++;
-        }
+        if (still) this.q('UPDATE media SET live_of = ? WHERE id = ?').run(still, r.media_id);
       }
     });
-    return linked;
   }
 
   // --- albums & timeline ---------------------------------------------------
@@ -303,10 +298,12 @@ export class Library {
 
   albums() {
     return this.q(`
-      SELECT a.id, a.name, count(DISTINCT f.media_id) AS count,
-        (SELECT f2.media_id FROM file_albums fa2 JOIN files f2 ON f2.id = fa2.file_id JOIN media m ON m.id = f2.media_id
-          WHERE fa2.album_id = a.id AND m.live_of IS NULL ORDER BY m.taken_at DESC LIMIT 1) AS cover
-      FROM albums a JOIN file_albums fa ON fa.album_id = a.id JOIN files f ON f.id = fa.file_id
+      SELECT a.id, a.name, count(DISTINCT m.id) AS count,
+        (SELECT f2.media_id FROM file_albums fa2 JOIN files f2 ON f2.id = fa2.file_id JOIN media m2 ON m2.id = f2.media_id
+          WHERE fa2.album_id = a.id AND m2.live_of IS NULL AND m2.archived = 0 ORDER BY m2.taken_at DESC LIMIT 1) AS cover
+      FROM albums a JOIN file_albums fa ON fa.album_id = a.id JOIN files f ON f.id = fa.file_id JOIN media m ON m.id = f.media_id
+      -- What the album view shows: no live-photo clips, nothing archived.
+      WHERE m.live_of IS NULL AND m.archived = 0
       GROUP BY a.id ORDER BY a.name COLLATE NOCASE`).all();
   }
 
@@ -314,17 +311,21 @@ export class Library {
    * Page through the timeline, newest first. `cursor` is [taken_at, id] of the
    * last item already shown; direction 'newer' pages back toward the top.
    */
-  timeline({ cursor, direction = 'older', limit = 300, view = 'all', albumId = null }) {
-    const where = ['m.live_of IS NULL'];
+  /** WHERE conditions and parameters for a view ('all', 'favorites', 'videos', 'archive') and an optional album. */
+  #viewFilter(view, albumId) {
+    const where = ['m.live_of IS NULL', view === 'archive' ? 'm.archived = 1' : 'm.archived = 0'];
     const params = [];
     if (view === 'favorites') where.push('m.favorite = 1');
-    if (view === 'archive') where.push('m.archived = 1');
-    else where.push('m.archived = 0');
     if (view === 'videos') where.push("m.kind = 'video'");
     if (albumId) {
       where.push(`m.id IN (${IN_ALBUM})`);
       params.push(albumId);
     }
+    return { where, params };
+  }
+
+  timeline({ cursor, direction = 'older', limit = 300, view = 'all', albumId = null }) {
+    const { where, params } = this.#viewFilter(view, albumId);
     const older = direction === 'older';
     if (cursor) {
       where.push(older
@@ -333,7 +334,7 @@ export class Library {
       params.push(cursor[0], cursor[0], cursor[1]);
     }
     const order = older ? 'DESC' : 'ASC';
-    const rows = this.db.prepare(`
+    const rows = this.q(`
       SELECT ${TIMELINE_COLUMNS} FROM media m WHERE ${where.join(' AND ')}
       ORDER BY m.taken_at ${order}, m.id ${order} LIMIT ?`).all(...params, limit + 1);
     const more = rows.length > limit;
@@ -344,17 +345,10 @@ export class Library {
 
   /** Month buckets for the scrubber. */
   months({ view = 'all', albumId = null } = {}) {
-    const where = ['live_of IS NULL', view === 'archive' ? 'archived = 1' : 'archived = 0'];
-    const params = [];
-    if (view === 'favorites') where.push('favorite = 1');
-    if (view === 'videos') where.push("kind = 'video'");
-    if (albumId) {
-      where.push(`id IN (${IN_ALBUM})`);
-      params.push(albumId);
-    }
-    return this.db.prepare(`
-      SELECT substr(local_time, 1, 7) AS month, count(*) AS count, max(taken_at) AS newest
-      FROM media WHERE ${where.join(' AND ')} GROUP BY month ORDER BY month DESC`).all(...params);
+    const { where, params } = this.#viewFilter(view, albumId);
+    return this.q(`
+      SELECT substr(m.local_time, 1, 7) AS month, count(*) AS count, max(m.taken_at) AS newest
+      FROM media m WHERE ${where.join(' AND ')} GROUP BY month ORDER BY month DESC`).all(...params);
   }
 
   // --- devices -------------------------------------------------------------

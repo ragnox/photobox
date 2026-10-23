@@ -48,6 +48,8 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+const thumbUrl = (id, v) => `/api/media/${id}/thumb?v=${v}`;
+const fullUrl = (id) => `/api/media/${id}/full`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const locale = navigator.language;
 // local_time is the wall clock where the photo was taken; render it as-is.
@@ -94,10 +96,14 @@ const state = {
   platform: null,
   sources: [],
   running: false,
+  remote: false,
+  network: null,
 };
 const months = new Map(); // 'YYYY-MM' -> { el }
 const days = new Map(); // 'YYYY-MM-DD' -> { el, header, rows, items }
 const tiles = new Map(); // media id -> tile element
+
+const cursorOf = (item) => `${item.taken_at}:${item.id}`;
 
 function query(extra = {}) {
   const p = new URLSearchParams({ view: state.view, ...extra });
@@ -123,7 +129,7 @@ async function loadOlder() {
   state.loading = true;
   const gen = state.generation;
   const last = state.items.at(-1);
-  const cursor = last ? `${last.taken_at}:${last.id}` : state.startCursor;
+  const cursor = last ? cursorOf(last) : state.startCursor;
   try {
     const { items, more } = await api(`/api/timeline?${query({ limit: PAGE, ...(cursor && { cursor }) })}`);
     if (gen !== state.generation) return;
@@ -141,9 +147,8 @@ async function loadNewer() {
   if (state.loading || !state.hasNewer || !state.items.length) return;
   state.loading = true;
   const gen = state.generation;
-  const first = state.items[0];
   try {
-    const { items, more } = await api(`/api/timeline?${query({ limit: PAGE, direction: 'newer', cursor: `${first.taken_at}:${first.id}` })}`);
+    const { items, more } = await api(`/api/timeline?${query({ limit: PAGE, direction: 'newer', cursor: cursorOf(state.items[0]) })}`);
     if (gen !== state.generation) return;
     // Keep what's on screen in place while content grows above it.
     const before = document.documentElement.scrollHeight;
@@ -188,7 +193,7 @@ function dayFor(item, atStart) {
   if (!day) {
     const el = document.createElement('section');
     el.className = 'day';
-    const header = document.createElement('h4');
+    const header = document.createElement('h3');
     header.textContent = fmtDay.format(wallClock(dayKey));
     const rows = document.createElement('div');
     el.append(header, rows);
@@ -277,7 +282,7 @@ function createTile(item) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.onload = () => img.classList.add('loaded');
-    img.src = `/api/media/${item.id}/thumb?v=${item.v}`;
+    img.src = thumbUrl(item.id, item.v);
     el.append(img);
   } else {
     el.innerHTML = `<div class="placeholder">${icon(item.kind === 'video' ? 'play' : 'image')}</div>`;
@@ -373,6 +378,7 @@ function setView() {
   $('#view-title').hidden = !title;
   $('#view-title').textContent = title ?? '';
   document.body.classList.remove('menu-open');
+  $('#new-pill').hidden = true;
   resetTimeline();
   scrollTo(0, 0);
   loadMonths();
@@ -386,17 +392,18 @@ async function loadAlbums() {
   $('#albums').innerHTML = state.albums.length
     ? state.albums.map((a) => `
         <a href="#album/${a.id}" data-album="${a.id}" class="${state.album === a.id ? 'active' : ''}">
-          ${a.cover ? `<img src="/api/media/${a.cover}/thumb?v=${a.v}" alt="" loading="lazy">` : '<span class="cover"></span>'}
+          ${a.cover ? `<img src="${thumbUrl(a.cover, a.v)}" alt="" loading="lazy">` : '<span class="cover"></span>'}
           <span class="name">${esc(a.name)}</span><span class="count">${a.count}</span>
         </a>`).join('')
-    : '<p class="muted small">Albums from Google Takeout show up here</p>';
+    : '<p class="muted small note">Albums from Google Takeout show up here</p>';
   if (state.album) $('#view-title').textContent = state.albums.find((a) => a.id === state.album)?.name ?? 'Album';
 }
 
+let sourcesKey = '';
 function renderSources(sources) {
   const key = JSON.stringify(sources.map((s) => [s.id, s.files]));
-  if (key === renderSources.last) return;
-  renderSources.last = key;
+  if (key === sourcesKey) return;
+  sourcesKey = key;
   $('#sources').innerHTML = sources.length
     ? sources.map((s) => `
         <div class="source" title="${esc(s.path)}">
@@ -404,7 +411,7 @@ function renderSources(sources) {
           <span class="muted small">${s.files}</span>
           <button class="icon-btn" data-remove="${s.id}" aria-label="Stop showing ${esc(s.path)}">${icon('x')}</button>
         </div>`).join('')
-    : '<p class="muted small" style="margin:4px 12px">No folders yet</p>';
+    : '<p class="muted small note">No folders yet</p>';
 }
 
 $('#sources').addEventListener('click', async (e) => {
@@ -413,14 +420,14 @@ $('#sources').addEventListener('click', async (e) => {
   const source = state.sources.find((s) => s.id === Number(id));
   if (!confirm(`Remove ${source?.path} from Photobox?\n\nYour files stay where they are; only the library entries and thumbnails are removed.`)) return;
   await api(`/api/sources/${id}`, { method: 'DELETE' });
-  pollNow();
+  poll();
 });
 
 function renderStatus({ indexing }) {
   const el = $('#status');
   el.hidden = !indexing.running;
   // Dock/taskbar progress: >1 is indeterminate, <0 hides it.
-  desktop?.setProgress(!indexing.running ? -1 : indexing.total ? indexing.done / indexing.total : 2);
+  desktop?.setProgress(indexing.running ? (indexing.total ? indexing.done / indexing.total : 2) : -1);
   if (!indexing.running) return;
   const name = indexing.source?.split('/').filter(Boolean).at(-1) ?? '';
   $('#status-text').textContent = indexing.phase === 'scanning'
@@ -430,8 +437,7 @@ function renderStatus({ indexing }) {
 }
 
 function renderStats(stats) {
-  const parts = [`${stats.photos.toLocaleString()} photos`, `${stats.videos.toLocaleString()} videos`];
-  $('#stats').textContent = parts.join(' · ');
+  $('#stats').textContent = `${stats.photos.toLocaleString()} photos · ${stats.videos.toLocaleString()} videos`;
 }
 
 function updateChrome() {
@@ -440,25 +446,25 @@ function updateChrome() {
   const isEmpty = !state.items.length && !state.hasOlder && !state.loading;
   empty.hidden = !isEmpty;
   if (!isEmpty) return;
-  if (!state.sources.length && state.remote) {
-    empty.innerHTML = `<div class="art">${icon('image')}</div><h2>No photos yet</h2><p>Add folders in Photobox on your computer.</p>`;
-  } else if (!state.sources.length) {
-    empty.innerHTML = `
-      <div class="art">${icon('image')}</div>
-      <h2>Bring your photos home</h2>
-      <p>Add an extracted Google Takeout or any folder of photos. Photobox reads dates, places and albums from the Takeout JSON files, removes duplicates, and keeps watching the folder.</p>
-      <button class="btn primary" data-action="add">${icon('plus')}Add folder</button>`;
-  } else if (state.running) {
-    empty.innerHTML = `<div class="art">${icon('hdd')}</div><h2>Importing…</h2><p>Photos appear here as they're processed.</p>`;
-  } else {
+  const show = (art, title, text = '', extra = '') =>
+    (empty.innerHTML = `<div class="art">${icon(art)}</div><h2>${title}</h2>${text && `<p>${text}</p>`}${extra}`);
+  if (!state.sources.length && state.remote) show('image', 'No photos yet', 'Add folders in Photobox on your computer.');
+  else if (!state.sources.length) {
+    show('image', 'Bring your photos home',
+      'Add an extracted Google Takeout or any folder of photos. Photobox reads dates, places and albums from the Takeout JSON files, removes duplicates, and keeps watching the folder.',
+      `<button class="btn primary" data-action="add">${icon('plus')}Add folder</button>`);
+  } else if (state.running) show('hdd', 'Importing…', "Photos appear here as they're processed.");
+  else {
     const what = { favorites: 'No favorites yet', videos: 'No videos', archive: 'Nothing archived' }[state.view] ?? 'Nothing here';
-    empty.innerHTML = `<div class="art">${icon(state.view === 'favorites' ? 'heart' : 'image')}</div><h2>${what}</h2>`;
+    show(state.view === 'favorites' ? 'heart' : 'image', what);
   }
 }
 
 $('#empty').addEventListener('click', (e) => e.target.closest('[data-action="add"]') && openAddDialog());
 $('#newest-btn').addEventListener('click', () => setView());
-$('#menu-btn').addEventListener('click', () => document.body.classList.toggle('menu-open'));
+$('#menu-btn').addEventListener('click', (e) => {
+  e.currentTarget.setAttribute('aria-expanded', document.body.classList.toggle('menu-open'));
+});
 
 // Poll for import progress; refresh the view when new photos land.
 let lastVersion = null;
@@ -471,7 +477,7 @@ async function poll() {
     const s = await api('/api/status');
     const wasRunning = state.running;
     state.platform = s.platform;
-    if (state.remote !== s.remote) document.documentElement.classList.toggle('remote', s.remote);
+    document.documentElement.classList.toggle('remote', s.remote);
     state.remote = s.remote;
     state.network = s.network;
     $('#devices-section').hidden = s.remote;
@@ -482,10 +488,7 @@ async function poll() {
     renderSources(s.sources);
     renderStats(s.stats);
     if (lastVersion !== null && s.version !== lastVersion) libraryChanged();
-    if (wasRunning && !state.running) {
-      loadAlbums();
-      if (Date.now() - lastReload > 500) libraryChanged(true);
-    }
+    if (wasRunning && !state.running && Date.now() - lastReload > 500) libraryChanged(true);
     lastVersion = s.version;
     updateChrome();
   } catch {
@@ -493,26 +496,24 @@ async function poll() {
   }
   pollTimer = setTimeout(poll, state.running ? 1500 : 5000);
 }
-const pollNow = () => poll();
+function reload() {
+  lastReload = Date.now();
+  loadAlbums();
+  setView();
+}
 
+/** New photos arrived: reload when nothing would jump under the user, otherwise offer to. */
 function libraryChanged(final = false) {
   const atTop = scrollY < 400 && !state.hasNewer && $('#lightbox').hidden;
   if (!state.items.length || atTop) {
-    if (final || Date.now() - lastReload > 3000) {
-      lastReload = Date.now();
-      loadAlbums();
-      setView();
-    }
+    if (final || Date.now() - lastReload > 3000) reload();
   } else {
     $('#new-pill').hidden = false;
+    if (final) loadAlbums();
   }
 }
 
-$('#new-pill').addEventListener('click', () => {
-  $('#new-pill').hidden = true;
-  loadAlbums();
-  setView();
-});
+$('#new-pill').addEventListener('click', reload);
 
 // --- add folder dialog ---------------------------------------------------------
 
@@ -563,6 +564,7 @@ $('#add-form').addEventListener('submit', async (e) => {
 // --- connect a phone (on the computer running Photobox) -----------------------
 
 const pairDialog = $('#pair-dialog');
+const pairBody = $('#pair-body');
 const fmtAgo = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
 const ago = (ms) => {
   const minutes = Math.round((ms - Date.now()) / 60000);
@@ -579,26 +581,25 @@ async function loadDevices() {
         <div class="device">
           ${icon('phone')}<span class="name">${esc(d.name)}</span>
           <span class="muted small">${d.last_seen_at ? `seen ${esc(ago(d.last_seen_at))}` : 'not used yet'}</span>
-          <button class="icon-btn" data-unpair="${d.id}" aria-label="Disconnect ${esc(d.name)}">${icon('x')}</button>
+          <button class="icon-btn" data-disconnect="${d.id}" aria-label="Disconnect ${esc(d.name)}">${icon('x')}</button>
         </div>`).join('')
-    : '<p class="muted small" style="margin:4px 12px">No phones connected</p>';
+    : '<p class="muted small note">No devices connected</p>';
   return devices;
 }
 
 $('#devices').addEventListener('click', async (e) => {
-  const id = e.target.closest('[data-unpair]')?.dataset.unpair;
+  const id = e.target.closest('[data-disconnect]')?.dataset.disconnect;
   if (!id || !confirm('Disconnect this device? It will need a new pairing code to see your photos again.')) return;
   await api(`/api/devices/${id}`, { method: 'DELETE' });
   loadDevices();
 });
 
 function renderPairing({ links, fingerprint, expiresAt }) {
-  const body = $('#pair-body');
   if (!links.length) {
-    body.innerHTML = '<p>This computer has no network address right now. Connect it to Wi-Fi or your VPN, then try again.</p>';
+    pairBody.innerHTML = '<p>This computer has no network address right now. Connect it to Wi-Fi or your VPN, then try again.</p>';
     return;
   }
-  body.innerHTML = `
+  pairBody.innerHTML = `
     <ol class="steps">
       <li>On your phone, open the camera and scan this code. The phone needs to be on the same Wi-Fi or VPN.</li>
       ${fingerprint ? '<li>The first time, the browser warns that the connection is not private, because Photobox uses its own certificate. Tap <b>Advanced</b>, then <b>Proceed</b>.</li>' : ''}
@@ -618,36 +619,33 @@ function renderPairing({ links, fingerprint, expiresAt }) {
 }
 
 async function openPairDialog() {
-  const body = $('#pair-body');
-  clearInterval(pairTimer);
   pairDialog.showModal();
   if (!state.network) {
-    body.innerHTML = `
+    pairBody.innerHTML = `
       <p>Phones connect to Photobox over your Wi-Fi or VPN. That is turned off right now.</p>
       <p class="muted">Quit Photobox and start it with network access:</p>
       <pre class="cmd">photobox serve --listen 0.0.0.0</pre>`;
     return;
   }
-  body.innerHTML = '<p class="muted">Making a pairing code…</p>';
+  pairBody.innerHTML = '<p class="muted">Making a pairing code…</p>';
   try {
     const known = new Set((await loadDevices()).map((d) => d.id));
     const pairing = await api('/api/pairing', { method: 'POST' });
     renderPairing(pairing);
     pairTimer = setInterval(async () => {
-      if (!pairDialog.open) return clearInterval(pairTimer);
       const added = (await loadDevices()).find((d) => !known.has(d.id));
       if (added) {
         clearInterval(pairTimer);
-        body.innerHTML = `<p class="paired">${icon('check')}<span><b>${esc(added.name)}</b> is connected.</span></p>
+        pairBody.innerHTML = `<p class="paired">${icon('check')}<span><b>${esc(added.name)}</b> is connected.</span></p>
           <p class="muted">On the phone, choose <b>Install app</b> or <b>Add to Home screen</b> in the browser menu to use Photobox like an app.</p>`;
       } else if (Date.now() > pairing.expiresAt) {
         clearInterval(pairTimer);
-        body.innerHTML = '<p>The pairing code has expired.</p><button type="button" class="btn" id="pair-again">Make a new code</button>';
+        pairBody.innerHTML = '<p>The pairing code has expired.</p><button type="button" class="btn" id="pair-again">Make a new code</button>';
         $('#pair-again').addEventListener('click', openPairDialog);
       }
     }, 2000);
   } catch (err) {
-    body.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    pairBody.innerHTML = `<p class="error">${esc(err.message)}</p>`;
   }
 }
 
@@ -655,16 +653,16 @@ $('#pair-btn').addEventListener('click', openPairDialog);
 $('#pair-close').addEventListener('click', () => pairDialog.close());
 pairDialog.addEventListener('close', () => clearInterval(pairTimer));
 
-let toastTimer = null;
-function toast(message) {
-  const el = $('#toast');
-  el.textContent = message;
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.hidden = true), 4000);
-}
-
 if (desktop) {
+  let toastTimer = null;
+  const toast = (message) => {
+    const el = $('#toast');
+    el.textContent = message;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (el.hidden = true), 4000);
+  };
+
   desktop.onMenu(async (action) => {
     try {
       if (action === 'add-folder') {
@@ -720,6 +718,7 @@ function openLightbox(id) {
   if (lb.index < 0) return;
   lightbox.hidden = false;
   document.body.style.overflow = 'hidden';
+  $('#lb-close').focus();
   showCurrent();
 }
 
@@ -742,37 +741,38 @@ function step(delta) {
 async function showCurrent() {
   const item = state.items[lb.index];
   const token = ++lb.token;
+  lb.details = null; // until this item's details arrive, LIVE and reveal must not use the previous one's
   $('#lb-prev').disabled = lb.index === 0;
   $('#lb-next').disabled = lb.index === state.items.length - 1 && !state.hasOlder;
   if (lb.index > state.items.length - 10) loadOlder();
 
   if (item.kind === 'video') {
     const video = document.createElement('video');
-    Object.assign(video, { controls: true, autoplay: true, playsInline: true, src: `/api/media/${item.id}/full` });
-    if (item.thumb_w) video.poster = `/api/media/${item.id}/thumb?v=${item.v}`;
+    Object.assign(video, { controls: true, autoplay: true, playsInline: true, src: fullUrl(item.id) });
+    if (item.thumb_w) video.poster = thumbUrl(item.id, item.v);
     video.onerror = () => showStageMessage("This video format can't play in the browser.", item);
     stage.replaceChildren(video);
   } else {
     // Show the thumbnail immediately, swap in the full image once it's decoded.
     const img = document.createElement('img');
     img.alt = '';
-    if (item.thumb_w) img.src = `/api/media/${item.id}/thumb?v=${item.v}`;
+    if (item.thumb_w) img.src = thumbUrl(item.id, item.v);
     stage.replaceChildren(img);
     const full = new Image();
-    full.src = `/api/media/${item.id}/full`;
+    full.src = fullUrl(item.id);
     full.decode().then(() => token === lb.token && (img.src = full.src)).catch(() => {
       if (token === lb.token && !item.thumb_w) showStageMessage("This file couldn't be decoded.", item);
     });
     // Warm up the neighbours.
     for (const n of [state.items[lb.index + 1], state.items[lb.index - 1]]) {
-      if (n?.kind === 'image') new Image().src = `/api/media/${n.id}/full`;
+      if (n?.kind === 'image') new Image().src = fullUrl(n.id);
     }
   }
 
   const when = wallClock(item.local_time);
   $('#lb-date').textContent = `${fmtFull.format(when)} · ${fmtTime.format(when)}`;
   $('#lb-name').textContent = '';
-  $('#lb-fav').classList.toggle('on', Boolean(item.favorite));
+  showFavorite(item.favorite);
   $('#lb-live').hidden = true;
   $('#lb-reveal').hidden = !canReveal();
 
@@ -818,13 +818,22 @@ function renderInfo(d) {
   $('#lb-info').innerHTML = html.join('');
 }
 
+function showFavorite(on) {
+  $('#lb-fav').classList.toggle('on', Boolean(on));
+  $('#lb-fav').setAttribute('aria-pressed', Boolean(on));
+}
+
+function toggleInfo() {
+  $('#lb-info-btn').setAttribute('aria-expanded', lightbox.classList.toggle('info-open'));
+}
+
 async function toggleFavorite() {
   const item = state.items[lb.index];
   const favorite = !item.favorite;
   const { version } = await api(`/api/media/${item.id}/favorite`, { method: 'POST', body: { favorite } });
   item.favorite = favorite ? 1 : 0;
   lastVersion = version; // our own change - no need to refresh the view
-  $('#lb-fav').classList.toggle('on', favorite);
+  showFavorite(favorite);
   const badge = tiles.get(item.id)?.querySelector('.fav');
   if (badge) badge.hidden = !favorite;
 }
@@ -847,14 +856,14 @@ $('#lb-fav').addEventListener('click', toggleFavorite);
 $('#lb-live').addEventListener('click', playLive);
 $('#lb-live').addEventListener('mouseenter', playLive);
 $('#lb-reveal').addEventListener('click', () => reveal(state.items[lb.index]));
-$('#lb-info-btn').addEventListener('click', () => lightbox.classList.toggle('info-open'));
+$('#lb-info-btn').addEventListener('click', toggleInfo);
 
 addEventListener('keydown', (e) => {
   if (lightbox.hidden || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === 'Escape') closeLightbox();
   else if (e.key === 'ArrowLeft') step(-1);
   else if (e.key === 'ArrowRight') step(1);
-  else if (e.key === 'i') lightbox.classList.toggle('info-open');
+  else if (e.key === 'i') toggleInfo();
   else if (e.key === 'f') toggleFavorite();
   else if (e.key === 'l') playLive();
   else return;

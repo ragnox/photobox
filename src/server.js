@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -6,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import QRCode from 'qrcode';
 import { BROWSER_IMAGE_EXT, BROWSER_VIDEO_EXT } from './media.js';
-import { cachePath, makePreview } from './thumbs.js';
+import { thumbPath, previewPath, makePreview } from './thumbs.js';
 import { requestToken, tokenCookie } from './remote.js';
 
 const run = promisify(execFile);
@@ -14,8 +15,12 @@ const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 // Photo libraries live in all kinds of places, including our own ~/.photobox cache.
 const SEND = { dotfiles: 'allow' };
+// Thumbnails and previews never change for a given ?v=.
+const CACHED = { ...SEND, maxAge: '365d', immutable: true };
 // What an unpaired device may load on the network listener: the pairing page and the CA it needs.
 const OPEN_PATHS = new Set(['/pair.html', '/pair.js', '/style.css', '/api/pair', '/photobox-ca.crt']);
+
+const viewFilter = (req) => ({ view: req.query.view ?? 'all', albumId: Number(req.query.album) || null });
 
 function parseCursor(value) {
   const m = typeof value === 'string' && value.match(/^(-?\d+):(\d+)$/);
@@ -61,6 +66,8 @@ export function createApp({ library, indexer, watcher, config, network = null },
     next();
   };
 
+  const scanInBackground = (source) => indexer.scanSource(source).catch((err) => indexer.error(source.path, err));
+
   const mediaOr404 = (req, res) => {
     const media = library.media(Number(req.params.id));
     if (!media) res.status(404).json({ error: 'Not found' });
@@ -75,20 +82,15 @@ export function createApp({ library, indexer, watcher, config, network = null },
   });
 
   app.get('/api/timeline', (req, res) => {
-    const limit = Math.min(Number(req.query.limit) || 300, 1000);
-    const { items, more } = library.timeline({
+    res.json(library.timeline({
+      ...viewFilter(req),
       cursor: parseCursor(req.query.cursor),
       direction: req.query.direction === 'newer' ? 'newer' : 'older',
-      limit,
-      view: req.query.view ?? 'all',
-      albumId: Number(req.query.album) || null,
-    });
-    res.json({ items, more });
+      limit: Math.min(Number(req.query.limit) || 300, 1000),
+    }));
   });
 
-  app.get('/api/months', (req, res) => {
-    res.json(library.months({ view: req.query.view ?? 'all', albumId: Number(req.query.album) || null }));
-  });
+  app.get('/api/months', (req, res) => res.json(library.months(viewFilter(req))));
 
   app.get('/api/albums', (req, res) => {
     res.json(library.albums().map((a) => ({ ...a, v: a.cover ? library.media(a.cover).hash.slice(0, 10) : null })));
@@ -103,7 +105,7 @@ export function createApp({ library, indexer, watcher, config, network = null },
   app.get('/api/media/:id/thumb', (req, res) => {
     const media = mediaOr404(req, res);
     if (!media) return;
-    res.sendFile(cachePath(config.thumbsDir, media.hash, '.webp'), { ...SEND, maxAge: '365d', immutable: true }, (err) => {
+    res.sendFile(thumbPath(config, media.hash), CACHED, (err) => {
       if (err && !res.headersSent) res.status(404).end();
     });
   });
@@ -120,19 +122,17 @@ export function createApp({ library, indexer, watcher, config, network = null },
       return res.sendFile(file, SEND);
     }
     if (BROWSER_IMAGE_EXT.has(ext)) return res.sendFile(file, SEND);
-    const preview = cachePath(config.previewsDir, media.hash, '.jpg');
+    const preview = previewPath(config, media.hash);
     try {
       if (!fs.existsSync(preview)) await makePreview(file, preview);
-      res.sendFile(preview, { ...SEND, maxAge: '365d', immutable: true });
+      res.sendFile(preview, CACHED);
     } catch (err) {
       res.status(415).json({ error: `Can't decode ${ext}: ${err.message}` });
     }
   });
 
   app.get('/api/media/:id/live', (req, res) => {
-    const media = mediaOr404(req, res);
-    if (!media) return;
-    const video = library.mediaDetails(media.id).live_video;
+    const video = library.mediaDetails(Number(req.params.id))?.live_video;
     const file = video && library.primaryPath(video);
     if (!file) return res.status(404).end();
     res.sendFile(file, SEND);
@@ -150,13 +150,14 @@ export function createApp({ library, indexer, watcher, config, network = null },
     const media = mediaOr404(req, res);
     if (!media) return;
     const file = library.primaryPath(media.id);
-    if (process.platform !== 'darwin' || !file) return res.status(501).json({ error: 'Only supported on macOS' });
+    if (process.platform !== 'darwin') return res.status(501).json({ error: 'Only supported on macOS' });
+    if (!file) return res.status(404).json({ error: 'File is no longer on disk' });
     await run('open', ['-R', file]).catch(() => {});
     res.json({ ok: true });
   });
 
   app.post('/api/sources', hostOnly, async (req, res) => {
-    const raw = String(req.body?.path ?? '').trim().replace(/^~(?=$|\/)/, process.env.HOME ?? '~');
+    const raw = String(req.body?.path ?? '').trim().replace(/^~(?=$|\/)/, os.homedir());
     const dir = path.resolve(raw);
     let stat;
     try {
@@ -170,7 +171,7 @@ export function createApp({ library, indexer, watcher, config, network = null },
     }
     const source = library.addSource(dir);
     watcher.watchSource(source);
-    indexer.scanSource(source).catch((err) => indexer.error(dir, err));
+    scanInBackground(source);
     res.json(source);
   });
 
@@ -183,7 +184,7 @@ export function createApp({ library, indexer, watcher, config, network = null },
   });
 
   app.post('/api/rescan', hostOnly, (req, res) => {
-    for (const source of library.sources()) indexer.scanSource(source).catch((err) => indexer.error(source.path, err));
+    for (const source of library.sources()) scanInBackground(source);
     res.json({ ok: true });
   });
 
@@ -220,7 +221,7 @@ export function createApp({ library, indexer, watcher, config, network = null },
       const paired = network.pairing.redeem(req.body?.code, req.body?.name);
       if (!paired) return res.status(401).json({ error: 'This pairing code was already used or has expired. Make a new one on your computer.' });
       res.setHeader('Set-Cookie', tokenCookie(paired.token));
-      res.json({ token: paired.token, device: paired.device, ownCertificate: Boolean(network.tls.caDer) });
+      res.json({ token: paired.token, device: paired.device, ownCertificate: Boolean(network.tls.ca) });
     });
   }
 
@@ -233,8 +234,16 @@ export function createApp({ library, indexer, watcher, config, network = null },
 
   // Photobox's own CA, for installing on a phone (only when Photobox made the certificate).
   app.get('/photobox-ca.crt', (req, res) => {
-    if (!network?.tls.caDer) return res.status(404).end();
+    if (!network?.tls.ca) return res.status(404).end();
     res.attachment('photobox-ca.crt').type('application/x-x509-ca-cert').send(network.tls.caDer);
+  });
+
+  // Errors as a short JSON message: a stack trace or file path must never reach a browser,
+  // least of all an unpaired device on the network (malformed JSON bodies land here too).
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    if (!err.expose) console.error(err);
+    res.status(err.status ?? 500).json({ error: err.expose ? err.message : 'Internal error' });
   });
 
   return app;

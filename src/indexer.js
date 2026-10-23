@@ -1,69 +1,20 @@
 import fs from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { mediaKind, isHidden } from './media.js';
+import { mediaKind } from './media.js';
+import { quickHash, walk, readJson } from './files.js';
 import { readImageMeta, readVideoMeta } from './metadata.js';
-import { makeThumbnail, imageSize, cachePath } from './thumbs.js';
-import { formatLocal, localToInstant, dateFromFilename, zoneAt } from './dates.js';
+import { makeThumbnail, imageSize, thumbPath, previewPath } from './thumbs.js';
+import { DATE_RANK, formatLocal, localToInstant, dateFromFilename, zoneAt } from './dates.js';
 import { SidecarIndex, classifyJson, albumTitle, sidecarMeta, takeoutFolderKey } from './takeout/sidecar.js';
 import { MANIFEST, ManifestIndex, readManifest, manifestMeta } from './manifest.js';
 
-const SKIP_DIRS = new Set(['node_modules', '@eaDir', '#recycle', '$RECYCLE.BIN', 'System Volume Information']);
-// How much we trust each date source; better information replaces worse.
-const DATE_RANK = { exif: 4, takeout: 4, filename: 2, upload: 1, file: 0 };
-const HASH_CHUNK = 64 * 1024;
-
-/** Fast content fingerprint: size + first and last 64 KB. Good enough to dedupe photo libraries. */
-export async function quickHash(file, size) {
-  const hash = createHash('sha1').update(String(size));
-  const handle = await fs.open(file, 'r');
-  try {
-    const head = Buffer.alloc(Math.min(HASH_CHUNK, size));
-    await handle.read(head, 0, head.length, 0);
-    hash.update(head);
-    if (size > HASH_CHUNK) {
-      const tail = Buffer.alloc(Math.min(HASH_CHUNK, size - HASH_CHUNK));
-      await handle.read(tail, 0, tail.length, size - tail.length);
-      hash.update(tail);
-    }
-  } finally {
-    await handle.close();
-  }
-  return hash.digest('hex');
-}
-
-export async function* walk(dir) {
-  let entries;
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (isHidden(entry.name)) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) yield* walk(full);
-    } else if (entry.isFile()) {
-      yield full;
-    }
-  }
-}
-
 async function isReadableDir(dir) {
   try {
-    return (await fs.stat(dir)).isDirectory() && Boolean(await fs.readdir(dir));
+    await fs.readdir(dir);
+    return true;
   } catch {
     return false;
-  }
-}
-
-async function readJson(file) {
-  try {
-    return JSON.parse(await fs.readFile(file, 'utf8'));
-  } catch {
-    return null;
   }
 }
 
@@ -148,7 +99,7 @@ export class Indexer extends EventEmitter {
 
   /** Serialize scans so the watcher and manual rescans never overlap. */
   enqueue(job) {
-    const next = this.queue.then(job, job);
+    const next = this.queue.then(job);
     this.queue = next.catch(() => {});
     return next;
   }
@@ -192,11 +143,17 @@ export class Indexer extends EventEmitter {
     const roots = onlyDirs ?? [source.path];
     if (onlyDirs) for (const dir of onlyDirs) await context.addManifestsAbove(dir, source.path);
     for (const root of roots) {
-      const files = onlyDirs ? await this.#listDir(root) : walk(root);
-      for await (const file of files) {
+      for await (const file of walk(root, { recursive: !onlyDirs })) {
         if (file.toLowerCase().endsWith('.json')) await context.addJson(file);
         else if (mediaKind(file)) mediaFiles.push(file);
       }
+    }
+
+    // On Linux an unmounted drive's mount point is an empty, readable folder: same trap.
+    if (!onlyDirs && !mediaFiles.length && this.library.filePathsForSource(source.id).length) {
+      this.setStatus({ running: false, phase: 'idle', source: null });
+      this.error(source.path, new Error('Folder is empty, but Photobox knows photos in it (unmounted drive?) - skipped'));
+      return { files: 0, added: 0, offline: true };
     }
 
     // Files that disappeared since the last full scan.
@@ -232,36 +189,29 @@ export class Indexer extends EventEmitter {
     return { files: mediaFiles.length, added };
   }
 
-  async *#listDir(dir) {
-    try {
-      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-        if (entry.isFile() && !isHidden(entry.name)) yield path.join(dir, entry.name);
-      }
-    } catch {
-      // folder vanished
-    }
-  }
-
   /** Index one file. Returns true when it created a new media item. */
   async #indexFile(source, file, context) {
     const stat = await fs.stat(file);
     const { sidecar, album, manifest } = context.lookup(file);
     const existing = this.library.fileByPath(file);
-    // Without a Takeout sidecar, an export manifest entry plays its part. Files moved or renamed
-    // inside the export are found by content; an unchanged file still has its indexed content.
-    let listed = sidecar || !manifest ? null : manifest.find(file);
-    if (manifest && !sidecar && !listed && existing) listed = manifest.byHash.get(this.library.media(existing.media_id)?.hash) ?? null;
+    // Without a Takeout sidecar, an export manifest entry plays its part: found by path, or by
+    // content for files moved or renamed inside the export (an unchanged file keeps its indexed hash).
+    const exported = sidecar ? null : manifest;
+    const byHash = (hash) => (hash && exported?.byHash.get(hash)) || null;
+    let listed = exported ? exported.find(file) ?? byHash(existing && this.library.media(existing.media_id)?.hash) : null;
     let sidecarPath = sidecar?.entry.path ?? listed?.key ?? null;
     if (existing && existing.size === stat.size && existing.mtime === Math.floor(stat.mtimeMs) && existing.sidecar === sidecarPath) {
       return false;
     }
 
     const hash = await quickHash(file, stat.size);
-    if (manifest && !sidecar && !listed) {
-      listed = manifest.byHash.get(hash) ?? null;
+    if (exported && !listed) {
+      listed = byHash(hash);
       sidecarPath = listed?.key ?? null;
     }
     const sc = sidecar ? sidecarMeta(sidecar.entry.data) : listed ? manifestMeta(listed.entry) : null;
+    // Disk names can be truncated or sanitized; then the sidecar's title is the real name.
+    if (sidecar && sidecar.method !== 'title' && sidecar.method !== 'truncated') sc.title = null;
     if (sc?.trashed) {
       if (existing) await this.#deleteThumbs(this.library.removeFiles([file]));
       return false;
@@ -276,7 +226,7 @@ export class Indexer extends EventEmitter {
     let created = false;
 
     if (!media) {
-      const importing = this.#importMedia(file, kind, hash, stat, sc, sidecar?.method);
+      const importing = this.#importMedia(file, kind, hash, stat, sc);
       this.inflight.set(hash, importing);
       try {
         media = await importing;
@@ -284,10 +234,13 @@ export class Indexer extends EventEmitter {
         this.inflight.delete(hash);
       }
       created = true;
-    } else if (sc && (DATE_RANK[sc.fromManifest ? sc.dateSource : 'takeout'] > DATE_RANK[media.date_source] || !this.library.hasSidecar(media.id) ||
-        (sc.fromManifest && existing?.sidecar !== sidecarPath))) {
-      // Same photo seen before without its sidecar (e.g. split zip parts), or its manifest entry changed: upgrade.
-      this.library.updateMediaMeta(media.id, await this.#extract(file, kind, stat, sc, sidecar?.method));
+    } else if (sc) {
+      // Seen before with a worse date or without its sidecar (split zip parts), or its manifest entry changed.
+      const betterDate = DATE_RANK[sc.fromManifest ? sc.dateSource : 'takeout'] > DATE_RANK[media.date_source];
+      const entryChanged = sc.fromManifest && existing?.sidecar !== sidecarPath;
+      if (betterDate || entryChanged || !this.library.hasSidecar(media.id)) {
+        this.library.updateMediaMeta(media.id, await this.#extract(file, kind, stat, sc));
+      }
     }
 
     const albumIds = [...new Set([album, ...(sc?.albums ?? [])].filter(Boolean))].map((name) => this.library.albumId(name));
@@ -300,7 +253,7 @@ export class Indexer extends EventEmitter {
     return created;
   }
 
-  async #extract(file, kind, stat, sc, sidecarMethod) {
+  async #extract(file, kind, stat, sc) {
     const info = kind === 'video' ? await readVideoMeta(file) : await readImageMeta(file);
     const name = path.basename(file).normalize('NFC');
     const fromName = dateFromFilename(name);
@@ -324,11 +277,9 @@ export class Indexer extends EventEmitter {
     let { width, height } = info;
     if (kind === 'image' && !width) ({ width, height } = await imageSize(file));
 
-    // Disk names can be truncated or sanitized; the sidecar title is the real name.
-    const useTitle = sc?.title && (sc.fromManifest || sidecarMethod === 'title' || sidecarMethod === 'truncated');
     return {
       ...date,
-      filename: useTitle ? sc.title : name,
+      filename: sc?.title ?? name,
       width: width ?? null,
       height: height ?? null,
       duration: info.duration ?? null,
@@ -342,11 +293,11 @@ export class Indexer extends EventEmitter {
     };
   }
 
-  async #importMedia(file, kind, hash, stat, sc, sidecarMethod) {
-    const meta = await this.#extract(file, kind, stat, sc, sidecarMethod);
+  async #importMedia(file, kind, hash, stat, sc) {
+    const meta = await this.#extract(file, kind, stat, sc);
     let thumb = {};
     try {
-      thumb = await makeThumbnail(file, kind, cachePath(this.config.thumbsDir, hash, '.webp'), { duration: meta.duration });
+      thumb = await makeThumbnail(file, kind, thumbPath(this.config, hash), { duration: meta.duration });
     } catch (err) {
       this.error(file, new Error(`thumbnail failed: ${err.message.split('\n')[0]}`));
     }
@@ -356,8 +307,8 @@ export class Indexer extends EventEmitter {
 
   async #deleteThumbs(hashes) {
     for (const hash of hashes) {
-      await fs.rm(cachePath(this.config.thumbsDir, hash, '.webp'), { force: true });
-      await fs.rm(cachePath(this.config.previewsDir, hash, '.jpg'), { force: true });
+      await fs.rm(thumbPath(this.config, hash), { force: true });
+      await fs.rm(previewPath(this.config, hash), { force: true });
     }
   }
 }

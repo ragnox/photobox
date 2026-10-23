@@ -12,13 +12,13 @@
 // SidecarIndex resolves all of these; it is pure (no I/O) so it is easy to test.
 
 import path from 'node:path';
-import { MEDIA_EXT } from '../media.js';
+import { stripMediaExt } from '../media.js';
 
 const SUPPLEMENTAL = '.supplemental-metadata';
 // Shortest name we trust for prefix matching of truncated sidecar names.
 const MIN_TRUNCATED = 20;
 
-export const EDITED_SUFFIXES = [
+const EDITED_SUFFIXES = [
   '-edited', '-effects', '-smile', '-mix', '-collage', '-animation',
   '-bearbeitet', '-modifié', '-modificato', '-editado', '-ha editado', '-editat',
   '-bewerkt', '-redigerad', '-redigeret', '-redigert', '-muokattu', '-edytowane',
@@ -30,11 +30,6 @@ const nfc = (s) => s.normalize('NFC');
 // Case-, normalization- and punctuation-insensitive form, used as a fallback key.
 const loose = (s) => nfc(s).toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, '_');
 const key = (name, counter) => `${name}\u0000${counter ?? ''}`;
-
-function stripMediaExt(name) {
-  const ext = path.extname(name).toLowerCase();
-  return MEDIA_EXT.has(ext) ? name.slice(0, -ext.length) : name;
-}
 
 function splitCounter(stem) {
   const m = stem.match(/^(.*)\((\d+)\)$/s);
@@ -104,10 +99,6 @@ export class SidecarIndex {
     this.titles = new Map();
   }
 
-  get size() {
-    return this.entries.length;
-  }
-
   add(jsonPath, data) {
     const { stem, counter } = parseSidecarName(path.basename(jsonPath));
     const entry = { path: jsonPath, data, stem, counter, looseStem: loose(stem) };
@@ -119,7 +110,6 @@ export class SidecarIndex {
       if (!this.titles.has(t)) this.titles.set(t, []);
       this.titles.get(t).push(entry);
     }
-    return entry;
   }
 
   /**
@@ -200,6 +190,9 @@ export function sidecarMeta(data) {
  *   /x/takeout-001/Takeout/Google Photos/Trip -> "Google Photos/Trip"
  * Folders outside a Takeout tree are identified by their full path.
  */
+/** Is this folder somewhere inside a Takeout export? */
+export const isInTakeout = (dir) => takeoutFolderKey(dir) !== dir;
+
 export function takeoutFolderKey(dir) {
   const parts = dir.split(path.sep);
   const i = parts.lastIndexOf('Takeout');

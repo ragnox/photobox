@@ -70,6 +70,9 @@ function makeServer(ca, names) {
   return { key: forge.pki.privateKeyToPem(keys.privateKey), cert };
 }
 
+/** The host names and IP addresses a certificate is valid for. */
+const altNames = (cert) => (cert.subjectAltName ?? '').split(', ').map((s) => s.replace(/^(DNS|IP Address):/, '')).filter(Boolean);
+
 /** Is this server certificate from `ca`, valid for a while yet, and does it cover every name? */
 function usable(server, ca, names) {
   try {
@@ -77,7 +80,7 @@ function usable(server, ca, names) {
     const issuer = new crypto.X509Certificate(ca.cert);
     if (!cert.checkIssued(issuer) || !cert.verify(issuer.publicKey)) return false;
     if (Date.parse(cert.validTo) - Date.now() < RENEW_DAYS * DAY) return false;
-    const covered = new Set((cert.subjectAltName ?? '').split(', ').map((s) => s.replace(/^(DNS|IP Address):/, '')));
+    const covered = new Set(altNames(cert));
     return names.every((n) => covered.has(n));
   } catch {
     return false;
@@ -129,7 +132,6 @@ export function ensureCertificates(dir, names) {
 /** A certificate you brought yourself (from `tailscale cert`, mkcert, ...), with the names it is valid for. */
 export function loadCertificates(certFile, keyFile) {
   const cert = fs.readFileSync(certFile, 'utf8');
-  const names = (new crypto.X509Certificate(cert).subjectAltName ?? '').split(', ')
-    .map((s) => s.replace(/^(DNS|IP Address):/, '')).filter(Boolean);
+  const names = altNames(new crypto.X509Certificate(cert));
   return { key: fs.readFileSync(keyFile, 'utf8'), cert, ca: null, caDer: null, fingerprint: null, names };
 }

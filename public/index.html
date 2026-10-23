@@ -12,7 +12,7 @@
 </head>
 <body>
   <header class="topbar">
-    <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu" data-icon="menu"></button>
+    <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu" aria-expanded="false" data-icon="menu"></button>
     <a class="brand" href="#">
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M7 22l6-7 4 5 3-3 5 5z" fill="white"/><circle cx="21" cy="11" r="3" fill="white"/></svg>
       <span>Photobox</span>
@@ -33,7 +33,7 @@
       <a href="#archive" data-view="archive"><span data-icon="archive"></span>Archive</a>
     </nav>
     <h3>Albums</h3>
-    <div class="albums" id="albums"><p class="muted small">No albums yet</p></div>
+    <div class="albums" id="albums"></div>
     <h3>Sources</h3>
     <div class="sources" id="sources"></div>
     <section id="devices-section" hidden>
@@ -56,27 +56,27 @@
   <div class="toast" id="toast" role="status" hidden></div>
   <div class="drop-overlay" id="drop-overlay" hidden><div>Drop folders to add them</div></div>
 
-  <div class="lightbox" id="lightbox" hidden>
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Photo viewer" hidden>
     <div class="lb-stage" id="lb-stage"></div>
     <div class="lb-top">
       <button class="icon-btn" id="lb-close" aria-label="Close (Esc)" data-icon="x"></button>
       <div class="lb-title"><div id="lb-name"></div><div class="muted small" id="lb-date"></div></div>
       <button class="icon-btn lb-live" id="lb-live" aria-label="Play live photo" hidden>LIVE</button>
-      <button class="icon-btn" id="lb-fav" aria-label="Favorite (F)" data-icon="heart"></button>
+      <button class="icon-btn" id="lb-fav" aria-label="Favorite (F)" aria-pressed="false" data-icon="heart"></button>
       <button class="icon-btn" id="lb-reveal" aria-label="Show in Finder" data-icon="folder"></button>
-      <button class="icon-btn" id="lb-info-btn" aria-label="Info (I)" data-icon="info"></button>
+      <button class="icon-btn" id="lb-info-btn" aria-label="Info (I)" aria-expanded="false" data-icon="info"></button>
     </div>
     <button class="lb-nav prev" id="lb-prev" aria-label="Previous" data-icon="left"></button>
     <button class="lb-nav next" id="lb-next" aria-label="Next" data-icon="right"></button>
     <aside class="lb-info" id="lb-info"></aside>
   </div>
 
-  <dialog class="dialog" id="add-dialog">
+  <dialog class="dialog" id="add-dialog" aria-labelledby="add-title">
     <form method="dialog" id="add-form">
-      <h2>Add photos</h2>
+      <h2 id="add-title">Add photos</h2>
       <p class="muted">Pick a folder of photos, or the folder where you extracted your Google Takeout zips. Photobox only reads it - nothing is moved or changed - and keeps watching it for new files.</p>
       <div class="path-row">
-        <input id="add-path" placeholder="/Users/you/Downloads/Takeout" autocomplete="off" spellcheck="false">
+        <input id="add-path" aria-label="Folder path" placeholder="/Users/you/Downloads/Takeout" autocomplete="off" spellcheck="false">
         <button type="button" class="btn" id="browse-btn">Choose…</button>
       </div>
       <p class="error small" id="add-error"></p>
@@ -85,19 +85,19 @@
         <ol>
           <li>Go to takeout.google.com, deselect all, then select <b>Google Photos</b>.</li>
           <li>Export as .zip (pick 50 GB parts to get fewer files) and download every part.</li>
-          <li>Extract all parts into one folder - mixed-up sidecars between parts are fine.</li>
+          <li>Extract every part, into one folder or one folder per part. A photo's details may sit in another part; that's fine.</li>
           <li>Add that folder here.</li>
         </ol>
       </details>
       <div class="dialog-actions">
         <button type="button" class="btn" id="add-cancel">Cancel</button>
-        <button type="submit" class="btn primary" id="add-submit">Add folder</button>
+        <button type="submit" class="btn primary">Add folder</button>
       </div>
     </form>
   </dialog>
 
-  <dialog class="dialog" id="pair-dialog">
-    <h2>Connect a phone</h2>
+  <dialog class="dialog" id="pair-dialog" aria-labelledby="pair-title">
+    <h2 id="pair-title">Connect a phone</h2>
     <div id="pair-body"></div>
     <div class="dialog-actions"><button type="button" class="btn" id="pair-close">Done</button></div>
   </dialog>

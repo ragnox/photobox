@@ -8,8 +8,10 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { loadConfig } from '../src/config.js';
 import { Library } from '../src/db.js';
-import { Indexer, quickHash } from '../src/indexer.js';
-import { exportLibrary, safeStem, MANIFEST } from '../src/export.js';
+import { Indexer } from '../src/indexer.js';
+import { quickHash } from '../src/files.js';
+import { exportLibrary, safeStem } from '../src/export.js';
+import { MANIFEST } from '../src/manifest.js';
 
 async function setup(t) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-export-'));

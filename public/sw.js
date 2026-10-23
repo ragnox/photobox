@@ -3,7 +3,7 @@
 // Thumbnails never change for a given ?v=, so they come from the cache first.
 const SHELL = 'photobox-shell-v1';
 const THUMBS = 'photobox-thumbs-v1';
-const SHELL_FILES = ['/', '/index.html', '/app.js', '/style.css', '/manifest.webmanifest', '/icons/icon-192.png'];
+const SHELL_FILES = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/icons/icon-192.png'];
 const MAX_THUMBS = 3000;
 const TRIM_EVERY = 100;
 
