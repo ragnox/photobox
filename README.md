@@ -169,3 +169,6 @@ can't post to it from your browser.
 - Reading `.zip` parts directly (extract them first).
 - Transcoding for videos the browser can't play (`.avi`, `.mts`, …). Those show a thumbnail and **Show in Finder**.
 - Writing metadata back into files. Favorites you set in Photobox live in its database.
+- A phone app. [docs/android-plan.md](docs/android-plan.md) is the plan for an open-source
+  Android replacement for Google Photos built on Photobox: backup with proof, browsing the
+  library from the phone, and freeing space safely.
