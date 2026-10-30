@@ -11,7 +11,7 @@ import { loadConfig } from '../src/config.js';
 import { Library } from '../src/db.js';
 import { Indexer } from '../src/indexer.js';
 import { createApp } from '../src/server.js';
-import { networkAccess, hashToken } from '../src/remote.js';
+import { networkAccess, hashToken, nativePairingPayload } from '../src/remote.js';
 import { ensureCertificates } from '../src/tls.js';
 
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
@@ -108,6 +108,17 @@ test('a pairing code works once and is traded for a token that is only stored ha
   assert.match(made.json.links[0].url, /^https:\/\/127\.0\.0\.1:\d+\/pair\.html#[\w-]{22}$/);
   assert.match(made.json.links[0].qr, /^<svg/);
   assert.equal(made.json.fingerprint, s.tls.fingerprint);
+  const native = JSON.parse(made.json.links[0].native.payload);
+  assert.equal(native.type, 'photobox-pair');
+  assert.equal(native.version, 1);
+  assert.equal(native.server, new URL(made.json.links[0].url).origin);
+  assert.equal(native.code, code);
+  assert.equal(native.expiresAt, made.json.expiresAt);
+  assert.equal(native.trust.kind, 'ca');
+  const anchor = Buffer.from(native.trust.certificate, 'base64');
+  assert.equal(native.trust.sha256, crypto.createHash('sha256').update(anchor).digest('hex'));
+  assert.deepEqual(anchor, Buffer.from(s.tls.caDer));
+  assert.match(made.json.links[0].native.qr, /^<svg/);
 
   assert.equal(paired.status, 200);
   assert.equal(paired.json.device.name, 'Pixel 10 Pro');
@@ -141,6 +152,7 @@ test('a paired device can browse and favorite, but managing the library stays on
   for (const [method, url] of [
     ['POST', '/api/sources'], ['DELETE', '/api/sources/1'], ['POST', '/api/rescan'], ['POST', '/api/pick-folder'],
     ['POST', `/api/media/${id}/reveal`], ['POST', '/api/pairing'], ['GET', '/api/devices'], ['DELETE', '/api/devices/1'],
+    ['GET', '/api/host'], ['POST', '/api/host/backup-directory'], ['POST', '/api/host/retry'], ['POST', '/api/host/shutdown'],
   ]) {
     // A folder that doesn't exist, so a broken check fails here instead of indexing the disk.
     const res = await s.remote(method, url, { token, body: method === 'GET' ? undefined : { path: '/nonexistent/photobox-test' } });
@@ -182,6 +194,10 @@ test('certificates: renewed for new addresses, signed by the same CA, keys priva
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const first = ensureCertificates(dir, ['localhost', '127.0.0.1', 'box.local']);
   const cert = new crypto.X509Certificate(first.cert);
+  const custom = JSON.parse(nativePairingPayload({ tls: { cert: first.cert } }, 'https://localhost:4568', 'x'.repeat(22), Date.now() + 60_000));
+  assert.equal(custom.trust.kind, 'certificate');
+  assert.deepEqual(Buffer.from(custom.trust.certificate, 'base64'), cert.raw);
+  assert.equal(custom.trust.sha256, crypto.createHash('sha256').update(cert.raw).digest('hex'));
   assert.equal(cert.subjectAltName, 'DNS:localhost, IP Address:127.0.0.1, DNS:box.local');
   assert.ok(cert.checkIssued(new crypto.X509Certificate(first.ca)));
   assert.ok(Date.parse(cert.validTo) - Date.now() <= 398 * 86_400_000);

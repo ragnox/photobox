@@ -1,6 +1,7 @@
 // photobox-export.json: what `photobox export` knows about every file it copied.
 // export.js writes it; the indexer reads it back, so an exported folder added as a
 // source keeps its albums, favorites, descriptions, people and dates.
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { DATE_RANK } from './dates.js';
@@ -14,6 +15,29 @@ const LOCAL_TIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 export async function readManifest(dir) {
   const data = await readJson(path.join(dir, MANIFEST));
   return data?.version === 1 && data.items && typeof data.items === 'object' ? data : null;
+}
+
+/**
+ * Where each exported file is in an export folder, by content: SHA-256 -> path. Read again
+ * only when the manifest changed. For "Show in Finder" on the copy in your library folder.
+ */
+export function exportedCopies(dir) {
+  let cached = { mtimeMs: -1, bySha256: new Map() };
+  return async (sha256) => {
+    const stat = await fs.stat(path.join(dir, MANIFEST)).catch(() => null);
+    if (!stat) return null;
+    if (stat.mtimeMs !== cached.mtimeMs) {
+      const items = (await readManifest(dir))?.items ?? {};
+      const bySha256 = new Map();
+      for (const [rel, entry] of Object.entries(items)) {
+        const parts = rel.split('/');
+        if (typeof entry?.sha256 !== 'string' || parts.some((p) => !p || p === '.' || p === '..')) continue;
+        bySha256.set(entry.sha256, path.join(dir, ...parts));
+      }
+      cached = { mtimeMs: stat.mtimeMs, bySha256 };
+    }
+    return cached.bySha256.get(sha256) ?? null;
+  };
 }
 
 const strings = (list) => (Array.isArray(list) ? list.filter((s) => typeof s === 'string' && s) : []);
@@ -51,11 +75,16 @@ export class ManifestIndex {
     const file = path.join(root, MANIFEST);
     this.byPath = new Map();
     this.byHash = new Map();
+    this.bySha256 = new Map();
+    // Every listed file's path below `root`, as the manifest spells it.
+    this.paths = [];
     for (const [rel, entry] of Object.entries(data.items)) {
       if (!entry || typeof entry !== 'object' || typeof entry.hash !== 'string') continue;
+      this.paths.push(rel);
       const item = { entry, key: `${file}#${createHash('sha1').update(JSON.stringify(entry)).digest('hex').slice(0, 12)}` };
       this.byPath.set(rel.normalize('NFC'), item);
       if (!this.byHash.has(entry.hash)) this.byHash.set(entry.hash, item);
+      if (/^[a-f0-9]{64}$/.test(entry.sha256 ?? '')) this.bySha256.set(entry.sha256, item);
     }
   }
 

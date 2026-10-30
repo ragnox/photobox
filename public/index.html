@@ -41,6 +41,11 @@
       <div class="devices" id="devices"></div>
       <button class="btn connect-btn" id="pair-btn"><span data-icon="phone"></span>Connect a phone</button>
     </section>
+    <section id="backup-section" hidden>
+      <h3>Phone backup</h3>
+      <p class="muted small note" id="backup-summary"></p>
+      <p class="small note" id="backup-error" hidden></p>
+    </section>
     <div class="stats muted small" id="stats"></div>
   </aside>
 
@@ -54,6 +59,7 @@
   <nav class="scrubber" id="scrubber" aria-label="Jump to year"></nav>
   <button class="new-pill" id="new-pill" hidden>New photos · refresh</button>
   <div class="toast" id="toast" role="status" hidden></div>
+  <div class="ctx-menu" id="ctx-menu" role="menu" aria-label="Photo" hidden></div>
   <div class="drop-overlay" id="drop-overlay" hidden><div>Drop folders to add them</div></div>
 
   <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Photo viewer" hidden>
@@ -63,6 +69,7 @@
       <div class="lb-title"><div id="lb-name"></div><div class="muted small" id="lb-date"></div></div>
       <button class="icon-btn lb-live" id="lb-live" aria-label="Play live photo" hidden>LIVE</button>
       <button class="icon-btn" id="lb-fav" aria-label="Favorite (F)" aria-pressed="false" data-icon="heart"></button>
+      <button class="icon-btn" id="lb-copy" aria-label="Copy image (⌘C)" data-icon="copy"></button>
       <button class="icon-btn" id="lb-reveal" aria-label="Show in Finder" data-icon="folder"></button>
       <button class="icon-btn" id="lb-info-btn" aria-label="Info (I)" aria-expanded="false" data-icon="info"></button>
     </div>
@@ -79,6 +86,9 @@
         <input id="add-path" aria-label="Folder path" placeholder="/Users/you/Downloads/Takeout" autocomplete="off" spellcheck="false">
         <button type="button" class="btn" id="browse-btn">Choose…</button>
       </div>
+      <div class="path-row name-row">
+        <input id="add-name" aria-label="Name" placeholder="Name, e.g. Google, second account (optional)" autocomplete="off" maxlength="100">
+      </div>
       <p class="error small" id="add-error"></p>
       <details class="muted small">
         <summary>Getting your photos out of Google</summary>
@@ -86,7 +96,7 @@
           <li>Go to takeout.google.com, deselect all, then select <b>Google Photos</b>.</li>
           <li>Export as .zip (pick 50 GB parts to get fewer files) and download every part.</li>
           <li>Extract every part, into one folder or one folder per part. A photo's details may sit in another part; that's fine.</li>
-          <li>Add that folder here.</li>
+          <li>Add that folder here. With more than one Google account, give each account's Takeout its own folder and name.</li>
         </ol>
       </details>
       <div class="dialog-actions">

@@ -8,7 +8,7 @@ import tzlookup from '@photostructure/tz-lookup';
 
 const pad = (n) => String(n).padStart(2, '0');
 // How much we trust each date source; better information replaces worse.
-export const DATE_RANK = { exif: 4, takeout: 4, filename: 2, upload: 1, file: 0 };
+export const DATE_RANK = { exif: 4, takeout: 4, capture: 3, filename: 2, upload: 1, file: 0 };
 const MIN_YEAR = 1990;
 const formatters = new Map();
 

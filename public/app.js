@@ -28,6 +28,9 @@ const ICONS = {
   live: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7" stroke-dasharray="2 2.4"/>',
   phone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+  layers: '<path d="m12 2 10 5-10 5L2 7Z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>',
 };
 const icon = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 for (const el of document.querySelectorAll('[data-icon]')) el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon));
@@ -74,10 +77,25 @@ const fmtBytes = (n) => {
 const DATE_SOURCES = {
   exif: 'from the photo (EXIF)',
   takeout: 'from Google Takeout',
+  capture: 'capture time from the phone',
   filename: 'guessed from the file name',
   upload: 'upload date (Google Takeout)',
   file: 'file modification time',
 };
+// "~/Photos/2024/03/x.jpg" rather than "/Users/name/Photos/2024/03/x.jpg".
+const homePath = (p) => p.replace(/^\/(Users|home)\/[^/]+(?=\/)/, '~');
+/** What a source is called: the name given to it, else its folder. */
+const sourceLabel = (s) => s.name || (s.managed === 'backup' ? 'Phone backup' : s.path.split(/[\\/]/).filter(Boolean).at(-1) ?? s.path);
+const sourceById = (id) => state.sources.find((s) => s.id === id);
+
+let toastTimer = null;
+function toast(message) {
+  const el = $('#toast');
+  el.textContent = message;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (el.hidden = true), 4000);
+}
 
 // --- timeline state ------------------------------------------------------------
 
@@ -86,6 +104,7 @@ const timelineEl = $('#timeline');
 const state = {
   view: 'all',
   album: null,
+  source: null,
   albums: [],
   items: [],
   hasOlder: true,
@@ -108,6 +127,7 @@ const cursorOf = (item) => `${item.taken_at}:${item.id}`;
 function query(extra = {}) {
   const p = new URLSearchParams({ view: state.view, ...extra });
   if (state.album) p.set('album', state.album);
+  if (state.source) p.set('source', state.source);
   return p.toString();
 }
 
@@ -363,18 +383,32 @@ function scheduleScrubberUpdate() {
 function parseHash() {
   const h = location.hash.replace(/^#\/?/, '');
   const album = h.match(/^album\/(\d+)/);
-  if (album) return { view: 'all', album: Number(album[1]) };
-  return { view: ['favorites', 'videos', 'archive'].includes(h) ? h : 'all', album: null };
+  if (album) return { view: 'all', album: Number(album[1]), source: null };
+  const source = h.match(/^source\/(\d+)/);
+  if (source) return { view: 'all', album: null, source: Number(source[1]) };
+  return { view: ['favorites', 'videos', 'archive'].includes(h) ? h : 'all', album: null, source: null };
+}
+
+function viewTitle() {
+  if (state.album) {
+    const album = state.albums.find((a) => a.id === state.album);
+    return album ? `${album.name}${albumSource(album) ? ` · ${albumSource(album)}` : ''}` : 'Album';
+  }
+  if (state.source) return sourceById(state.source) ? `From ${sourceLabel(sourceById(state.source))}` : 'Source';
+  return { favorites: 'Favorites', videos: 'Videos', archive: 'Archive' }[state.view];
 }
 
 function setView() {
-  const { view, album } = parseHash();
+  // A link in the photo info (one of its sources) leads out of the viewer.
+  if (!$('#lightbox').hidden) closeLightbox();
+  const { view, album, source } = parseHash();
   state.view = view;
   state.album = album;
-  for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('active', !album && a.dataset.view === view);
-  for (const a of document.querySelectorAll('#albums a')) a.classList.toggle('active', Number(a.dataset.album) === album);
-  const albumName = state.albums.find((a) => a.id === album)?.name;
-  const title = album ? albumName ?? 'Album' : { favorites: 'Favorites', videos: 'Videos', archive: 'Archive' }[view];
+  state.source = source;
+  for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('active', !album && !source && a.dataset.view === view);
+  renderAlbums();
+  renderSources(state.sources);
+  const title = viewTitle();
   $('#view-title').hidden = !title;
   $('#view-title').textContent = title ?? '';
   document.body.classList.remove('menu-open');
@@ -387,34 +421,65 @@ function setView() {
 
 addEventListener('hashchange', setView);
 
+/** Albums come from more than one source, so each says which one ("Trip" from two Google accounts). */
+const albumsFromManySources = () => new Set(state.albums.map((a) => a.source_id)).size > 1;
+/** In an archive's library, the archive's own photos: its albums are the library's. */
+const archiveSource = () => state.sources.find((s) => s.managed === 'archive');
+/** Which source an album is from, when that needs saying; the archive's albums go by their name. */
+const albumSource = (a) => (albumsFromManySources() && a.source_id !== archiveSource()?.id && sourceById(a.source_id) ? sourceLabel(sourceById(a.source_id)) : null);
+
+/**
+ * The albums to list: a picked source's own; else all, but an album the archive has too (an
+ * export put it there) only once, as the archive's.
+ */
+function listedAlbums() {
+  if (state.source) return state.albums.filter((a) => a.source_id === state.source);
+  const archive = archiveSource()?.id;
+  const inArchive = new Set(state.albums.filter((a) => a.source_id === archive).map((a) => a.name));
+  return state.albums.filter((a) => a.source_id === archive || !inArchive.has(a.name));
+}
+
 async function loadAlbums() {
   state.albums = await api('/api/albums');
-  $('#albums').innerHTML = state.albums.length
-    ? state.albums.map((a) => `
+  renderAlbums();
+}
+
+function renderAlbums() {
+  const shown = listedAlbums();
+  $('#albums').innerHTML = shown.length
+    ? shown.map((a) => `
         <a href="#album/${a.id}" data-album="${a.id}" class="${state.album === a.id ? 'active' : ''}">
           ${a.cover ? `<img src="${thumbUrl(a.cover, a.v)}" alt="" loading="lazy">` : '<span class="cover"></span>'}
-          <span class="name">${esc(a.name)}</span><span class="count">${a.count}</span>
+          <span class="album-text"><span class="name">${esc(a.name)}</span>${albumSource(a) ? `<span class="src">${esc(albumSource(a))}</span>` : ''}</span>
+          <span class="count">${a.count}</span>
         </a>`).join('')
     : '<p class="muted small note">Albums from Google Takeout show up here</p>';
-  if (state.album) $('#view-title').textContent = state.albums.find((a) => a.id === state.album)?.name ?? 'Album';
+  if (state.album) $('#view-title').textContent = viewTitle();
 }
 
 let sourcesKey = '';
+let renaming = false; // a source's name is being edited: don't redraw the list under it
 function renderSources(sources) {
-  const key = JSON.stringify(sources.map((s) => [s.id, s.files]));
-  if (key === sourcesKey) return;
+  const key = JSON.stringify([state.source, state.remote, sources.map((s) => [s.id, s.files, s.name])]);
+  if (key === sourcesKey || renaming) return;
   sourcesKey = key;
   $('#sources').innerHTML = sources.length
     ? sources.map((s) => `
-        <div class="source" title="${esc(s.path)}">
-          <span class="path">‎${esc(s.path)}</span>
+        <div class="source ${state.source === s.id ? 'active' : ''}" data-source="${s.id}" title="${esc(s.path)}">
+          <a class="src-link" href="#source/${s.id}">
+            <span class="name">${esc(sourceLabel(s))}</span>
+            <span class="path">‎${esc(homePath(s.path))}</span>
+          </a>
           <span class="muted small">${s.files}</span>
-          <button class="icon-btn" data-remove="${s.id}" aria-label="Stop showing ${esc(s.path)}">${icon('x')}</button>
+          ${state.remote ? '' : `<button class="icon-btn" data-rename="${s.id}" aria-label="Rename ${esc(sourceLabel(s))}">${icon('pencil')}</button>`}
+          ${s.managed ? '' : `<button class="icon-btn" data-remove="${s.id}" aria-label="Stop showing ${esc(s.path)}">${icon('x')}</button>`}
         </div>`).join('')
     : '<p class="muted small note">No folders yet</p>';
 }
 
 $('#sources').addEventListener('click', async (e) => {
+  const rename = e.target.closest('[data-rename]')?.dataset.rename;
+  if (rename) return renameSource(e.target.closest('.source'), sourceById(Number(rename)));
   const id = e.target.closest('[data-remove]')?.dataset.remove;
   if (!id) return;
   const source = state.sources.find((s) => s.id === Number(id));
@@ -423,6 +488,39 @@ $('#sources').addEventListener('click', async (e) => {
   poll();
 });
 
+/** Edit a source's name in its row (the desktop app has no prompt()): Enter or leaving the field saves, Esc cancels. */
+function renameSource(row, source) {
+  const input = document.createElement('input');
+  Object.assign(input, { className: 'rename', value: source.name ?? '', placeholder: sourceLabel({ ...source, name: null }), maxLength: 100 });
+  input.title = 'For example "Google, main account". Leave empty to show the folder name.';
+  input.setAttribute('aria-label', `Name for ${source.path}`);
+  row.querySelector('.src-link').replaceWith(input);
+  row.classList.add('renaming');
+  renaming = true;
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    if (save && input.value.trim() !== (source.name ?? '')) {
+      await api(`/api/sources/${source.id}/name`, { method: 'POST', body: { name: input.value } }).catch((err) => toast(err.message));
+    }
+    renaming = false;
+    sourcesKey = ''; // draw the row again, also when nothing changed
+    await poll();
+    loadAlbums();
+    $('#view-title').textContent = viewTitle() ?? '';
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') finish(true);
+    else if (e.key === 'Escape') finish(false);
+    else return;
+    e.preventDefault();
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
 function renderStatus({ indexing }) {
   const el = $('#status');
   el.hidden = !indexing.running;
@@ -430,14 +528,25 @@ function renderStatus({ indexing }) {
   desktop?.setProgress(indexing.running ? (indexing.total ? indexing.done / indexing.total : 2) : -1);
   if (!indexing.running) return;
   const name = indexing.source?.split('/').filter(Boolean).at(-1) ?? '';
-  $('#status-text').textContent = indexing.phase === 'scanning'
-    ? `Scanning ${name}…`
-    : `Importing ${name} · ${indexing.done.toLocaleString()} of ${indexing.total.toLocaleString()}`;
+  const progress = `${indexing.done.toLocaleString()} of ${indexing.total.toLocaleString()}`;
+  $('#status-text').textContent = indexing.phase === 'scanning' ? `Scanning ${name}…`
+    : indexing.phase === 'comparing' ? `Looking for versions of the same photo · ${progress}`
+    : `Importing ${name} · ${progress}`;
   $('#status-fill').style.width = indexing.total ? `${(100 * indexing.done) / indexing.total}%` : '4%';
 }
 
 function renderStats(stats) {
-  $('#stats').textContent = `${stats.photos.toLocaleString()} photos · ${stats.videos.toLocaleString()} videos`;
+  $('#stats').textContent = `${stats.photos.toLocaleString()} photos · ${stats.videos.toLocaleString()} videos` +
+    (stats.versions ? ` · ${stats.versions.toLocaleString()} older ${stats.versions === 1 ? 'version' : 'versions'} set aside` : '');
+}
+
+function renderBackup(backup) {
+  $('#backup-section').hidden = !backup || (!backup.configured && !backup.received);
+  if (!backup) return;
+  $('#backup-summary').textContent = `${backup.received} received · ${backup.indexed} indexed · ${backup.exported} export verified` +
+    (backup.running ? ' · processing…' : !backup.configured ? ' · export destination not configured' : '');
+  $('#backup-error').hidden = !backup.error;
+  $('#backup-error').textContent = backup.error ?? '';
 }
 
 function updateChrome() {
@@ -487,6 +596,7 @@ async function poll() {
     renderStatus(s);
     renderSources(s.sources);
     renderStats(s.stats);
+    renderBackup(s.backup);
     if (lastVersion !== null && s.version !== lastVersion) libraryChanged();
     if (wasRunning && !state.running && Date.now() - lastReload > 500) libraryChanged(true);
     lastVersion = s.version;
@@ -529,8 +639,8 @@ function openAddDialog() {
   $('#add-path').focus();
 }
 
-async function addSource(path) {
-  const source = await api('/api/sources', { method: 'POST', body: { path } });
+async function addSource(path, name = null) {
+  const source = await api('/api/sources', { method: 'POST', body: { path, name } });
   state.running = true;
   poll();
   return source;
@@ -553,8 +663,9 @@ $('#add-form').addEventListener('submit', async (e) => {
   const path = $('#add-path').value.trim();
   if (!path) return;
   try {
-    await addSource(path);
+    await addSource(path, $('#add-name').value.trim() || null);
     $('#add-path').value = '';
+    $('#add-name').value = '';
     dialog.close();
   } catch (err) {
     $('#add-error').textContent = err.message;
@@ -600,22 +711,38 @@ function renderPairing({ links, fingerprint, expiresAt }) {
     return;
   }
   pairBody.innerHTML = `
-    <ol class="steps">
+    <label>Connect using <select id="pair-client"><option value="browser">Phone browser</option><option value="android">Photobox for Android</option></select></label>
+    <ol class="steps" id="pair-browser-steps">
       <li>On your phone, open the camera and scan this code. The phone needs to be on the same Wi-Fi or VPN.</li>
       ${fingerprint ? '<li>The first time, the browser warns that the connection is not private, because Photobox uses its own certificate. Tap <b>Advanced</b>, then <b>Proceed</b>.</li>' : ''}
       <li>Name the phone and tap <b>Connect</b>.</li>
     </ol>
+    <p id="pair-android-steps" hidden>In Photobox for Android, tap <b>Scan host QR</b>. This code includes the host's public trust certificate; no browser certificate installation is needed.</p>
     <div class="qr" id="pair-qr">${links[0].qr}</div>
     ${links.length > 1 ? `<select id="pair-address" aria-label="Address">${links.map((l, i) => `<option value="${i}">${esc(new URL(l.url).host)}</option>`).join('')}</select>` : ''}
     <p class="muted small mono" id="pair-url">${esc(links[0].url)}</p>
+    <details id="pair-native-copy" hidden><summary>Copy Android pairing data</summary><textarea id="pair-native-payload" rows="4" readonly aria-label="Android pairing data"></textarea><button class="btn" id="pair-copy-native" type="button">Copy pairing data</button></details>
     <p class="muted small">The code works once, until ${esc(fmtTime.format(new Date(expiresAt)))}.</p>
     ${fingerprint ? `<details class="muted small"><summary>Certificate fingerprint</summary>
       <p>When you install the Photobox certificate on your phone, its SHA-256 fingerprint must be:</p><p class="mono">${esc(fingerprint)}</p></details>` : ''}`;
-  $('#pair-address')?.addEventListener('change', (e) => {
-    const link = links[Number(e.target.value)];
-    $('#pair-qr').innerHTML = link.qr;
-    $('#pair-url').textContent = link.url;
+  const update = () => {
+    const link = links[Number($('#pair-address')?.value ?? 0)];
+    const native = $('#pair-client').value === 'android';
+    $('#pair-browser-steps').hidden = native;
+    $('#pair-android-steps').hidden = !native;
+    $('#pair-native-copy').hidden = !native;
+    $('#pair-qr').classList.toggle('native-qr', native);
+    $('#pair-qr').innerHTML = native ? link.native.qr : link.qr;
+    $('#pair-url').textContent = native ? new URL(link.url).origin : link.url;
+    $('#pair-native-payload').value = link.native.payload;
+  };
+  $('#pair-address')?.addEventListener('change', update);
+  $('#pair-client').addEventListener('change', update);
+  $('#pair-copy-native').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('#pair-native-payload').value); }
+    catch { $('#pair-native-payload').select(); }
   });
+  update();
 }
 
 async function openPairDialog() {
@@ -637,7 +764,7 @@ async function openPairDialog() {
       if (added) {
         clearInterval(pairTimer);
         pairBody.innerHTML = `<p class="paired">${icon('check')}<span><b>${esc(added.name)}</b> is connected.</span></p>
-          <p class="muted">On the phone, choose <b>Install app</b> or <b>Add to Home screen</b> in the browser menu to use Photobox like an app.</p>`;
+          <p class="muted">In the Android app, choose your backup folders. In the browser, choose <b>Install app</b> or <b>Add to Home screen</b>.</p>`;
       } else if (Date.now() > pairing.expiresAt) {
         clearInterval(pairTimer);
         pairBody.innerHTML = '<p>The pairing code has expired.</p><button type="button" class="btn" id="pair-again">Make a new code</button>';
@@ -654,15 +781,6 @@ $('#pair-close').addEventListener('click', () => pairDialog.close());
 pairDialog.addEventListener('close', () => clearInterval(pairTimer));
 
 if (desktop) {
-  let toastTimer = null;
-  const toast = (message) => {
-    const el = $('#toast');
-    el.textContent = message;
-    el.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (el.hidden = true), 4000);
-  };
-
   desktop.onMenu(async (action) => {
     try {
       if (action === 'add-folder') {
@@ -672,6 +790,8 @@ if (desktop) {
         await api('/api/rescan', { method: 'POST' });
         state.running = true;
         poll();
+      } else if (action === 'connect-phone') {
+        await openPairDialog();
       }
     } catch (err) {
       toast(err.message);
@@ -774,6 +894,7 @@ async function showCurrent() {
   $('#lb-name').textContent = '';
   showFavorite(item.favorite);
   $('#lb-live').hidden = true;
+  $('#lb-copy').hidden = item.kind !== 'image' || !canCopy();
   $('#lb-reveal').hidden = !canReveal();
 
   const details = await api(`/api/media/${item.id}`).catch(() => null);
@@ -787,10 +908,37 @@ async function showCurrent() {
 const canReveal = () => Boolean(desktop) || (state.platform === 'darwin' && !state.remote);
 const revealLabel = () => (state.platform === 'darwin' ? 'Show in Finder' : 'Show in folder');
 
-async function reveal(item) {
-  if (!desktop) return api(`/api/media/${item.id}/reveal`, { method: 'POST' });
+/** Show a file of the photo in Finder: `file` if given, else the copy in the library folder, else an original. */
+async function reveal(item, file = null) {
+  if (!desktop) return api(`/api/media/${item.id}/reveal`, { method: 'POST', body: file ? { path: file } : {} });
   const details = lb.details?.id === item.id ? lb.details : await api(`/api/media/${item.id}`);
-  if (details.files[0]) desktop.reveal(details.files[0].path);
+  const target = file ?? details.copy ?? details.files[0]?.path;
+  if (target) desktop.reveal(target);
+}
+
+// The clipboard API needs a secure page: localhost, the desktop app or the paired HTTPS listener.
+const canCopy = () => Boolean(navigator.clipboard?.write && window.ClipboardItem);
+
+/** Put the photo on the clipboard as an image, at full size (paste it into a mail, a chat, a document). */
+async function copyImage(item = state.items[lb.index]) {
+  if (!item || item.kind !== 'image' || !canCopy()) return;
+  // Browsers take PNG; the photo is drawn into a canvas once it has loaded.
+  const png = (async () => {
+    const img = new Image();
+    img.src = fullUrl(item.id);
+    await img.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    return new Promise((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('too large'))), 'image/png'));
+  })();
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    toast('Copied');
+  } catch (err) {
+    toast(`Couldn't copy the image: ${err.message}`);
+  }
 }
 
 function showStageMessage(text, item) {
@@ -813,10 +961,55 @@ function renderInfo(d) {
       : '',
     d.albums.length ? field('albums', d.albums.map((a) => `<span class="chip">${esc(a)}</span>`).join('')) : '',
     d.people.length ? field('users', d.people.map((p) => `<span class="chip">${esc(p)}</span>`).join('')) : '',
-    field('hdd', `${d.files.length} ${d.files.length === 1 ? 'copy' : 'copies'} on disk`, d.files.map((f) => esc(f.path)).join('<br>')),
+    d.sources?.length ? field('hdd', `From ${d.sources.map((id) => `<a class="chip" href="#source/${id}">${esc(sourceById(id) ? sourceLabel(sourceById(id)) : 'a removed folder')}</a>`).join('')}`) : '',
+    renderLocations(d),
+    renderVersions(d),
   ];
   $('#lb-info').innerHTML = html.join('');
 }
+
+/** A path that shows the file in Finder when clicked, where that's possible. */
+const fileLink = (path) => (canReveal()
+  ? `<button class="link" data-reveal-path="${esc(path)}" title="${esc(revealLabel())}">${esc(homePath(path))}</button>`
+  : `<span class="path">${esc(homePath(path))}</span>`);
+
+function renderLocations(d) {
+  const places = [
+    ...(d.copy ? [{ what: 'In your library folder', path: d.copy }] : []),
+    ...d.files.filter((f) => f.path !== d.copy).map((f) => ({ what: `Original · ${sourceById(f.source_id) ? sourceLabel(sourceById(f.source_id)) : 'removed folder'}`, path: f.path })),
+  ];
+  return `<div class="field">${icon('folder')}<div><b>Where it is</b>
+    ${places.map((p) => `<div class="place"><span>${esc(p.what)}</span>${fileLink(p.path)}</div>`).join('')}</div></div>`;
+}
+
+function renderVersions(d) {
+  if (!d.versions?.length) return '';
+  const n = d.versions.length;
+  return `<div class="field">${icon('layers')}<div><b>${n} older ${n === 1 ? 'version' : 'versions'}</b>
+    <span>The same shot in other files. Photobox shows and exports this one, the best version; the others stay where they are.</span>
+    ${d.versions.map((v) => `<div class="place">
+      <span>${esc([v.width && `${v.width} × ${v.height}`, fmtBytes(v.bytes), ...new Set(v.files.map((f) => (sourceById(f.source_id) ? sourceLabel(sourceById(f.source_id)) : '')))].filter(Boolean).join(' · '))}</span>
+      ${v.files.map((f) => fileLink(f.path)).join('')}
+      ${state.remote ? '' : `<button class="btn small" data-separate="${v.id}">Not the same photo</button>`}
+    </div>`).join('')}</div></div>`;
+}
+
+$('#lb-info').addEventListener('click', async (e) => {
+  const item = state.items[lb.index];
+  const path = e.target.closest('[data-reveal-path]')?.dataset.revealPath;
+  if (path) return reveal(item, path);
+  const other = e.target.closest('[data-separate]')?.dataset.separate;
+  if (other) {
+    try {
+      await api(`/api/media/${item.id}/separate`, { method: 'POST', body: { from: Number(other) } });
+      toast('Shown as separate photos');
+      showCurrent();
+      $('#new-pill').hidden = false;
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+});
 
 function showFavorite(on) {
   $('#lb-fav').classList.toggle('on', Boolean(on));
@@ -856,9 +1049,92 @@ $('#lb-fav').addEventListener('click', toggleFavorite);
 $('#lb-live').addEventListener('click', playLive);
 $('#lb-live').addEventListener('mouseenter', playLive);
 $('#lb-reveal').addEventListener('click', () => reveal(state.items[lb.index]));
+$('#lb-copy').addEventListener('click', () => copyImage());
 $('#lb-info-btn').addEventListener('click', toggleInfo);
 
+// --- right-click menu ------------------------------------------------------------
+
+/** What a photo's right-click menu offers; `keys` are Electron accelerators, shown as the shortcut. */
+function photoActions(item, inViewer) {
+  return [
+    ...(item.kind === 'image' && canCopy() ? [{ id: 'copy', label: 'Copy Photo', keys: inViewer ? 'CmdOrCtrl+C' : null }] : []),
+    ...(canReveal() ? [{ id: 'reveal', label: revealLabel(), keys: null }] : []),
+    { id: 'info', label: inViewer && lightbox.classList.contains('info-open') ? 'Hide Info' : 'Get Info', keys: inViewer ? 'I' : null },
+  ];
+}
+
+function runPhotoAction(id, item, inViewer) {
+  if (id === 'copy') copyImage(item);
+  else if (id === 'reveal') reveal(item);
+  else if (id === 'info' && inViewer) toggleInfo();
+  else if (id === 'info') {
+    openLightbox(item.id);
+    if (!lightbox.classList.contains('info-open')) toggleInfo();
+  }
+}
+
+const ctxMenu = $('#ctx-menu');
+const isMacKeyboard = /Mac|iPhone|iPad/.test(navigator.platform);
+const shortcut = (keys) => keys.replace('CmdOrCtrl+', isMacKeyboard ? '⌘' : 'Ctrl+');
+
+/** The menu outside the desktop app (which shows a native one): resolves with the chosen action's id, or null. */
+function pageMenu(actions, e) {
+  return new Promise((resolve) => {
+    ctxMenu.innerHTML = actions.map((a) => `<button role="menuitem" data-action="${a.id}"><span>${esc(a.label)}</span>${a.keys ? `<kbd>${esc(shortcut(a.keys))}</kbd>` : ''}</button>`).join('');
+    ctxMenu.hidden = false;
+    // At the pointer; opened from the keyboard, at the photo. Never off-screen.
+    const at = e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : e.target.getBoundingClientRect();
+    const { width, height } = ctxMenu.getBoundingClientRect();
+    ctxMenu.style.left = `${Math.max(4, Math.min(at.x, innerWidth - width - 4))}px`;
+    ctxMenu.style.top = `${Math.max(4, Math.min(at.y, innerHeight - height - 4))}px`;
+    const buttons = [...ctxMenu.querySelectorAll('button')];
+    const returnTo = document.activeElement;
+    if (!e.clientX && !e.clientY) buttons[0]?.focus();
+    const off = new AbortController();
+    const done = (id) => {
+      off.abort();
+      ctxMenu.hidden = true;
+      if (ctxMenu.contains(document.activeElement)) returnTo?.focus({ preventScroll: true });
+      resolve(id);
+    };
+    const listen = (target, type, fn) => target.addEventListener(type, fn, { capture: true, signal: off.signal });
+    listen(ctxMenu, 'click', (ev) => { const b = ev.target.closest('button'); if (b) done(b.dataset.action); });
+    listen(window, 'pointerdown', (ev) => { if (!ctxMenu.contains(ev.target)) done(null); });
+    for (const type of ['blur', 'resize', 'scroll']) listen(window, type, () => done(null));
+    // Its keys don't reach the viewer: Esc closes the menu, not the photo. Enter and Space press the focused item.
+    listen(window, 'keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Escape' || ev.key === 'Tab') {
+        ev.preventDefault();
+        done(null);
+      } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        const i = buttons.indexOf(document.activeElement);
+        buttons.at((ev.key === 'ArrowDown' ? i + 1 : (i < 0 ? buttons.length : i) - 1) % buttons.length)?.focus();
+      }
+    });
+  });
+}
+
+// Right-click (or a long press, or the menu key) on a photo in the timeline or the viewer.
+addEventListener('contextmenu', async (e) => {
+  const tile = e.target.closest('.tile');
+  const inViewer = !tile && !lightbox.hidden && stage.contains(e.target);
+  const item = tile ? state.items.find((i) => i.id === Number(tile.dataset.id)) : inViewer ? state.items[lb.index] : null;
+  if (!item) return;
+  e.preventDefault();
+  const actions = photoActions(item, inViewer);
+  const id = desktop?.contextMenu ? await desktop.contextMenu(actions) : await pageMenu(actions, e);
+  if (id) runPhotoAction(id, item, inViewer);
+});
+
 addEventListener('keydown', (e) => {
+  // ⌘C / Ctrl+C copies the photo, unless text is selected (a path in the info panel, say).
+  if (!lightbox.hidden && (e.metaKey || e.ctrlKey) && !e.altKey && e.key === 'c' && !getSelection()?.toString()) {
+    copyImage();
+    e.preventDefault();
+    return;
+  }
   if (lightbox.hidden || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === 'Escape') closeLightbox();
   else if (e.key === 'ArrowLeft') step(-1);

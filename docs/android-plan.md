@@ -19,7 +19,7 @@ moving a real library (an Android phone plus a Google Takeout) off Google.
    has proved it holds an identical copy (full SHA-256). Nothing is ever deleted
    automatically, and nothing is deleted on the host because it was deleted on
    the phone.
-4. **Boring parts.** One process, SQLite, plain HTTP over a private network.
+4. **Boring parts.** One process, SQLite, HTTPS over a private network.
    It should run on a Mac in the corner or a small NAS without a Docker stack.
 5. **Leaving is tested.** Every release must pass an export and re-import round
    trip with nothing lost (Photobox's test suite already does this for the desktop).
@@ -113,6 +113,10 @@ whose job is narrow: back up with proof, browse, and free space safely.
 
 ## The work
 
+The implementation sequence and acceptance criteria are maintained in
+[phone-backup-plan.md](phone-backup-plan.md). Start with verified host reception;
+indexing and export must become full-hash-aware before issuing cleanup receipts.
+
 ### A. Library host (Photobox, Node)
 
 1. **Listen beyond localhost, safely.** Done: `photobox serve --listen <address>`
@@ -120,19 +124,23 @@ whose job is narrow: back up with proof, browse, and free space safely.
 2. **Device pairing.** Done: QR code with a one-time code, traded for a per-device
    token that the host stores hashed; devices are listed and can be disconnected.
 3. **Transport security.** Done: Photobox's own CA, installed on the phone once, or
-   your own certificate. The native app (B7) pins the CA's fingerprint from the QR code.
-4. **Resumable uploads.** The [tus](https://tus.io) protocol (open standard,
-   maintained Node server) at `/api/uploads`. Metadata: file name, size,
-   capture time, the phone's MediaStore ID and the SHA-256 computed on the
-   phone. The server writes to `inbox/<device>/YYYY/MM/` through a temporary
-   file, computes SHA-256 itself, and only then moves the file in place.
-5. **Proof of arrival.** `POST /api/assets/check` with a list of SHA-256 values
-   returns for each one: received, indexed, and exported into the library. The
-   phone frees space only for items that are all three. This needs a full
-   SHA-256 per media item in the database next to today's quick fingerprint.
+   your own certificate. The native app (B7) embeds and pins the public trust
+   certificate/fingerprint in its QR payload before exchanging the pairing code.
+   Physical-device verification remains pending.
+4. **Resumable uploads.** Host reception is built: the [tus](https://tus.io)
+   protocol at `/api/uploads`, persistent device-owned sessions, size/quota/disk
+   limits, full SHA-256 verification and atomic inbox publication. Original names,
+   capture timestamps and MediaStore IDs are recorded. See [the API](backup-api.md)
+   for storage layout and protocol details. The Android client is still pending.
+5. **Proof of arrival.** `POST /api/assets/check` is built: it re-hashes inbox and
+   destination originals, verifies full-content indexing and checks the destination
+   marker. It returns independent received/indexed/exported states. Native phone
+   cleanup remains pending and requires all three plus a current local version check.
 6. **Scheduled export** as a supported feature rather than a hand-written
    launchd job: `photobox schedule export ~/Photos --daily 03:30` writes and
-   loads a launchd agent (macOS) or a systemd user timer (Linux).
+    loads a launchd agent (macOS) or a systemd user timer (Linux).
+   Phone uploads already have a host-managed export queue: `--backup-dir <existing-dir>`
+   (or `PHOTOBOX_BACKUP_DIR`), with persistent receipts and automatic retries.
 7. **XMP sidecars.** Write `IMG_1234.jpg.xmp` next to each exported file with
    the date, place, description, rating/favorite, keywords for albums and
    people, so digiKam, darktable, Lightroom and Immich can read them too.
@@ -215,7 +223,13 @@ core: after them, the phone no longer needs Google Photos for anything.
 
 **Phase 1 status (October 2026):** built and covered by `test/remote.test.js`, and checked end
 to end with curl over Wi-Fi. Still open: a real phone over Wi-Fi and WireGuard, and `--listen`
-in the desktop app. Phase 2 is in progress on the `wip/phase-2` branch.
+in the desktop app. See [the implementation plan](phone-backup-plan.md) for
+phase 2 work and its current progress.
+
+**Android implementation:** [`android/`](../android/README.md) contains the native
+backup app and pure Kotlin protocol module. The QR/TLS contract, persistent queue,
+MediaStore discovery and WorkManager transfers are implemented. Milestone 3 remains
+open until [physical-device acceptance](android-verification.md) is recorded.
 
 ## Repository layout
 

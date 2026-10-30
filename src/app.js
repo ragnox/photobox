@@ -4,12 +4,15 @@ import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
-import { loadConfig } from './config.js';
+import { loadConfig, sourceProblem } from './config.js';
 import { Library } from './db.js';
 import { Indexer } from './indexer.js';
 import { SourceWatcher } from './watcher.js';
 import { createApp } from './server.js';
 import { networkAccess } from './remote.js';
+import { Uploads } from './uploads.js';
+import { BackupQueue } from './backup.js';
+import { saveHostSettings } from './host-settings.js';
 
 export class AlreadyRunning extends Error {
   constructor(url) {
@@ -18,7 +21,7 @@ export class AlreadyRunning extends Error {
   }
 }
 
-const lockPath = (config) => path.join(config.dataDir, 'instance.json');
+const lockPath = (config) => path.join(config.libraryDir, 'instance.json');
 
 function alive(pid) {
   try {
@@ -49,9 +52,14 @@ function listen(server, port, host) {
   });
 }
 
-/** The library for `config`, with `folders` added as sources, and its indexer. */
+/** The library for `config`, with `folders` added as sources, and its indexer. An archive's library also has the archive's own photos. */
 export function openLibrary(config, folders = []) {
+  for (const folder of folders) {
+    const problem = sourceProblem(path.resolve(folder), config);
+    if (problem) throw new Error(`${problem}: ${path.resolve(folder)}`);
+  }
   const library = new Library(config.dbPath);
+  if (config.archive) library.archiveSource(config.archive.root);
   for (const folder of folders) library.addSource(path.resolve(folder));
   return { library, indexer: new Indexer(library, config) };
 }
@@ -65,15 +73,39 @@ export async function scanAll(library, indexer, onScanned = () => {}) {
  * it, so this throws AlreadyRunning (with the other instance's URL) instead.
  * With `listen`, phones can pair and connect over the network too.
  */
-export async function startPhotobox({ dataDir, port, folders = [], onScanned, listen: address, remotePort, tlsCert, tlsKey } = {}) {
-  const config = loadConfig({ dataDir, port });
+export async function startPhotobox({ dataDir, archive, port, folders = [], onScanned, listen: address, remotePort, tlsCert, tlsKey, backupDir, managedBy = 'cli' } = {}) {
+  const config = loadConfig({ dataDir, archive, port, backupDir, listen: address, remotePort, tlsCert, tlsKey });
+  address = config.listen;
+  remotePort = config.remotePort;
+  tlsCert = config.tlsCert;
+  tlsKey = config.tlsKey;
   const other = runningInstance(config);
   if (other) throw new AlreadyRunning(other.url);
 
   const { library, indexer } = openLibrary(config, folders);
   const watcher = new SourceWatcher(library, indexer);
   const network = address ? networkAccess(config, library, { address, tlsCert, tlsKey }) : null;
-  const deps = { library, indexer, watcher, config, network };
+  const uploads = new Uploads(library, config);
+  const backup = new BackupQueue(library, indexer, uploads, config);
+  const hostControl = {
+    info: () => ({ pid: process.pid, dataDir: config.dataDir, archive: config.archive?.root ?? null, managedBy, port: config.port,
+      listen: address, remotePort: network?.port ?? null, backupDir: config.backupDir }),
+    async setBackupDirectory(value) {
+      if (value !== null && (typeof value !== 'string' || !path.isAbsolute(value))) {
+        throw Object.assign(new Error('Choose an absolute export directory'), { status: 400, expose: true });
+      }
+      const root = value === null ? null : path.resolve(value);
+      try { if (root) await backup.destination(root); }
+      catch { throw Object.assign(new Error('Export folder must exist, be separate from Photobox data, and have a valid destination marker'), { status: 400, expose: true }); }
+      saveHostSettings(config.dataDir, { backupDir: root });
+      config.backupDir = root;
+      backup.status.configured = Boolean(root);
+      backup.request(true);
+      return hostControl.info();
+    },
+    async shutdown() { await close(); },
+  };
+  const deps = { library, indexer, watcher, config, network, uploads, backup, hostControl };
   const servers = [];
   try {
     servers.push(await listen(http.createServer(createApp(deps)), config.port, config.host));
@@ -82,8 +114,13 @@ export async function startPhotobox({ dataDir, port, folders = [], onScanned, li
       servers.push(await listen(remote, remotePort != null ? Number(remotePort) : config.port ? config.port + 1 : 0, address));
       network.port = remote.address().port;
     }
+    // The archive too, so the desktop app opens the library the host last served.
+    saveHostSettings(config.dataDir, { port: config.port, listen: address, remotePort: remotePort ?? null, backupDir: config.backupDir, archive: config.archive?.root ?? null,
+      tlsCert: tlsCert ? path.resolve(tlsCert) : null, tlsKey: tlsKey ? path.resolve(tlsKey) : null });
   } catch (err) {
     for (const s of servers) s.close();
+    await backup.close();
+    await uploads?.close();
     library.close();
     throw err;
   }
@@ -92,6 +129,7 @@ export async function startPhotobox({ dataDir, port, folders = [], onScanned, li
 
   watcher.start();
   scanAll(library, indexer, onScanned).catch((err) => console.error(err));
+  backup.request();
 
   let closed = false;
   async function close() {
@@ -102,8 +140,11 @@ export async function startPhotobox({ dataDir, port, folders = [], onScanned, li
       s.close();
     }
     await watcher.close();
+    await backup.close();
+    await uploads.close();
+    await indexer.queue;
     if (runningInstance(config) === null) fs.rmSync(lockPath(config), { force: true });
     library.close();
   }
-  return { url, network: network?.info() ?? null, config, indexer, close };
+  return { url, network: network?.info() ?? null, config, indexer, backup, hostControl, close };
 }

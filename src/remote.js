@@ -14,6 +14,19 @@ export const hashToken = (token) => crypto.createHash('sha256').update(token).di
 const randomToken = (bytes) => crypto.randomBytes(bytes).toString('base64url');
 const deviceName = (name) => String(name ?? '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Device';
 
+/** Out-of-band public trust anchor: native clients verify TLS before redeeming the code. */
+export function nativePairingPayload(network, server, code, expiresAt) {
+  const cert = new crypto.X509Certificate(network.tls.ca ?? network.tls.cert);
+  return JSON.stringify({
+    type: 'photobox-pair', version: 1, server, code, expiresAt,
+    trust: {
+      kind: network.tls.ca ? 'ca' : 'certificate',
+      sha256: crypto.createHash('sha256').update(cert.raw).digest('hex'),
+      certificate: cert.raw.toString('base64'),
+    },
+  });
+}
+
 /** The device token a request carries: `Authorization: Bearer …` (apps) or the cookie (browsers). */
 export function requestToken(req) {
   const auth = req.headers.authorization;

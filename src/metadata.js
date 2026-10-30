@@ -1,15 +1,34 @@
+import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import exifr from 'exifr';
 import { parseTimestamp } from './dates.js';
 
 const run = promisify(execFile);
+const JPEG_HEAD = 256 * 1024;
+
+/**
+ * The bytes exifr needs. Given a path, exifr opens a file handle that it leaves open when a
+ * file is damaged or empty, and Node then ends the process. A JPEG keeps its EXIF in a segment
+ * of at most 64 KB near the start; other formats are read whole.
+ */
+async function metadataBytes(file) {
+  if (!/\.jpe?g$/i.test(file)) return fs.readFile(file);
+  const handle = await fs.open(file, 'r');
+  try {
+    const buffer = Buffer.alloc(JPEG_HEAD);
+    const { bytesRead } = await handle.read(buffer, 0, JPEG_HEAD, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
 
 /** EXIF from a photo: { date: {local, instant}, lat, lon, camera, width, height } (fields may be missing). */
 export async function readImageMeta(file) {
   let tags;
   try {
-    tags = await exifr.parse(file, {
+    tags = await exifr.parse(await metadataBytes(file), {
       tiff: true, exif: true, gps: true, ifd1: false, interop: false, xmp: false, icc: false, iptc: false,
       reviveValues: false, translateValues: false, mergeOutput: true,
     });
@@ -25,12 +44,17 @@ export async function readImageMeta(file) {
   let width = tags.ExifImageWidth ?? tags.ImageWidth ?? null;
   let height = tags.ExifImageHeight ?? tags.ImageHeight ?? null;
   if (tags.Orientation >= 5 && tags.Orientation <= 8) [width, height] = [height, width];
+  // The camera's own record of the moment, as written, to the sub-second if it keeps one.
+  // Copies that were recompressed keep it, so it tells versions of a shot from other shots.
+  const original = typeof tags.DateTimeOriginal === 'string' ? tags.DateTimeOriginal.trim() : '';
+  const subsec = tags.SubSecTimeOriginal != null ? String(tags.SubSecTimeOriginal).trim() : '';
   return {
     date,
     ...place,
     camera: cameraName(tags.Make, tags.Model),
     width,
     height,
+    shot: original ? [original, subsec].filter(Boolean).join('.') : null,
   };
 }
 

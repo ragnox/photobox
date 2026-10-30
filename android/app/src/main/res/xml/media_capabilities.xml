@@ -1,0 +1,8 @@
+<media-capabilities xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- This app copies originals; MediaProvider must not transcode them. -->
+    <format android:name="HEVC" supported="true" />
+    <format android:name="HDR10" supported="true" />
+    <format android:name="HDR10Plus" supported="true" />
+    <format android:name="HLG" supported="true" />
+    <format android:name="Dolby-Vision" supported="true" />
+</media-capabilities>

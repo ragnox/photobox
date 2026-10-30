@@ -24,10 +24,12 @@ export class SourceWatcher {
   }
 
   watchSource(source) {
+    if (source.managed === 'backup') return;
     if (this.watchers.has(source.id)) return;
+    if (source.managed === 'archive') return this.#watchArchive(source);
     const watcher = watch(source.path, {
       ignoreInitial: true,
-      // The same folders a scan skips: hidden ones, Synology's @eaDir thumbnails, recycle bins.
+      // The same folders a scan skips: hidden ones, Synology's @eaDir thumbnails, recycle bins, app libraries.
       ignored: (file, stats) => isSkipped(path.basename(file)) || (stats?.isFile() && !relevant(file)),
       awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 250 },
     });
@@ -41,6 +43,19 @@ export class SourceWatcher {
           if (file.startsWith(prefix)) this.#queue(source, 'removed', file);
         }
       })
+      .on('error', (err) => this.indexer.error(source.path, err));
+    this.watchers.set(source.id, watcher);
+  }
+
+  /** An archive's photos are the files its manifest lists, so a new manifest is what to look for. */
+  #watchArchive(source) {
+    const watcher = watch(path.join(source.path, MANIFEST), {
+      ignoreInitial: true,
+      awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 250 },
+    });
+    watcher
+      .on('add', (file) => this.#queue(source, 'changed', file))
+      .on('change', (file) => this.#queue(source, 'changed', file))
       .on('error', (err) => this.indexer.error(source.path, err));
     this.watchers.set(source.id, watcher);
   }

@@ -10,8 +10,11 @@ import { loadConfig } from '../src/config.js';
 import { Library } from '../src/db.js';
 import { Indexer } from '../src/indexer.js';
 import { quickHash } from '../src/files.js';
-import { exportLibrary, safeStem } from '../src/export.js';
+import { exportLibrary, safeStem, withExportLock, WRITING } from '../src/export.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { MANIFEST } from '../src/manifest.js';
+import { createHash } from 'node:crypto';
 
 async function setup(t) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-export-'));
@@ -216,6 +219,13 @@ test('skips sources that are gone or changed since the scan; dry run writes noth
   assert.deepEqual(await files(), ['2022/03/fine.jpg', MANIFEST]);
 });
 
+test('a photo whose name has no extension is exported with the one its content shows', async (t) => {
+  const { add, library, dest, files } = await setup(t);
+  await add('Photos from 2011/30.12.11 - 1', { content: await jpeg(200, 0, 0), taken: '2011-12-30T16:46:55Z', local: '2011-12-30 17:46:55' });
+  await exportLibrary(library, dest);
+  assert.deepEqual(await files(), ['2011/12/30.12.11 - 1.jpg', MANIFEST]);
+});
+
 test('safeStem keeps real names and makes them safe for any drive', () => {
   assert.equal(safeStem('Café Central.jpg'), 'Café Central');
   assert.equal(safeStem('a<b>c:d"e|f?g*h.png'), 'a_b_c_d_e_f_g_h');
@@ -302,4 +312,73 @@ test('files moved or renamed inside an export keep their details', async (t) => 
   // Exporting the re-indexed library into its own folder doesn't copy the moved photo back either.
   const again = await exportLibrary(back.library, dest);
   assert.deepEqual([again.copied, again.present], [0, 1]);
+});
+
+test('a better version of an exported photo: it is copied under a new name, the old file moves to .photobox/superseded', async (t) => {
+  const { tmp, library, add, dest, files, manifest } = await setup(t);
+  const at = { taken: '2024-03-07T13:15:44Z', local: '2024-03-07 14:15:44' };
+  const withSha = async (m) => {
+    const sha256 = createHash('sha256').update(await fs.readFile(m.path)).digest('hex');
+    library.db.prepare('UPDATE media SET sha256 = ? WHERE id = ?').run(sha256, m.id);
+    return { ...m, sha256 };
+  };
+  const old = await withSha(await add('Takeout/PXL_1.jpg', { ...at, content: 'recompressed', album: 'Trip' }));
+  await exportLibrary(library, dest);
+  assert.deepEqual(await files(), ['2024/03/PXL_1.jpg', MANIFEST]);
+
+  const better = await withSha(await add('PXL_1.jpg', { ...at, root: path.join(tmp, 'second'), content: 'the original, bigger' }));
+  library.applyVersions(new Map([[old.id, better.id]]));
+  const preview = await exportLibrary(library, dest, { dryRun: true });
+  assert.deepEqual([preview.planned.length, preview.superseded, preview.aside], [1, 0, ['2024/03/PXL_1.jpg']], 'a dry run says what would move, and moves nothing');
+  const result = await exportLibrary(library, dest);
+  assert.deepEqual([result.copied, result.superseded, result.total], [1, 1, 1]);
+  // The SSD copy only adds files: a new name reaches it, a replaced file under the old name never would.
+  assert.deepEqual(await files(), ['.photobox/superseded/2024/03/PXL_1.jpg', '2024/03/PXL_1 (2).jpg', MANIFEST]);
+  assert.equal(await fs.readFile(path.join(dest, '.photobox/superseded/2024/03/PXL_1.jpg'), 'utf8'), 'recompressed');
+  const m = await manifest();
+  assert.deepEqual(Object.keys(m.items), ['2024/03/PXL_1 (2).jpg']);
+  assert.deepEqual(m.items['2024/03/PXL_1 (2).jpg'].albums, ['Trip'], 'the old version\'s album comes along');
+  assert.deepEqual(m.superseded['.photobox/superseded/2024/03/PXL_1.jpg'],
+    { ...m.superseded['.photobox/superseded/2024/03/PXL_1.jpg'], sha256: old.sha256, supersededBy: better.sha256, exportedAs: '2024/03/PXL_1.jpg' });
+
+  const again = await exportLibrary(library, dest);
+  assert.deepEqual([again.copied, again.present, again.superseded], [0, 1, 0]);
+  assert.ok((await manifest()).superseded['.photobox/superseded/2024/03/PXL_1.jpg'], 'remembered across exports');
+});
+
+test('an exported photo whose better version can\'t be copied stays where it is', async (t) => {
+  const { tmp, library, add, dest, files } = await setup(t);
+  const at = { taken: '2024-03-07T13:15:44Z', local: '2024-03-07 14:15:44' };
+  const old = await add('PXL_1.jpg', { ...at, content: 'recompressed' });
+  library.db.prepare('UPDATE media SET sha256 = ? WHERE id = ?').run(createHash('sha256').update('recompressed').digest('hex'), old.id);
+  await exportLibrary(library, dest);
+  const better = await add('PXL_1.jpg', { ...at, root: path.join(tmp, 'second'), content: 'the original, bigger' });
+  library.db.prepare('UPDATE media SET sha256 = ? WHERE id = ?').run(createHash('sha256').update('the original, bigger').digest('hex'), better.id);
+  library.applyVersions(new Map([[old.id, better.id]]));
+  await fs.rm(better.path); // the second account's folder went offline
+  const result = await exportLibrary(library, dest);
+  assert.deepEqual([result.copied, result.superseded, result.skipped.length], [0, 0, 1]);
+  assert.deepEqual(await files(), ['2024/03/PXL_1.jpg', MANIFEST]);
+});
+
+test('a Photobox in another process waits while one writes to the folder; a lock left by a process that is gone is taken over', async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-lock-'));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)']);
+  t.after(() => other.kill());
+  const lock = path.join(tmp, WRITING);
+  await fs.writeFile(lock, JSON.stringify({ pid: other.pid, since: new Date().toISOString() }));
+
+  await assert.rejects(withExportLock(tmp, async () => 'wrote', { wait: 300 }), new RegExp(`Another Photobox \\(process ${other.pid}\\) is writing`));
+  const waiting = withExportLock(tmp, async () => 'wrote', { wait: 10_000 });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await fs.rm(lock);
+  assert.equal(await waiting, 'wrote', 'it goes ahead once the other is done');
+
+  await fs.writeFile(lock, JSON.stringify({ pid: other.pid, since: new Date().toISOString() }));
+  other.kill();
+  await once(other, 'exit');
+  const held = await withExportLock(tmp, async () => JSON.parse(await fs.readFile(lock, 'utf8')).pid);
+  assert.equal(held, process.pid, 'the lock of a process that is gone is taken over');
+  assert.deepEqual(await fs.readdir(tmp), [], 'and let go of afterwards');
 });

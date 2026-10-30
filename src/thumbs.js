@@ -83,6 +83,23 @@ export async function makePreview(file, out) {
   }
 }
 
+/**
+ * 64-bit difference hash of an image (a thumbnail will do), as hex: each bit says whether a
+ * pixel of a 9x8 greyscale version is brighter than its right neighbour. Copies of one
+ * picture differ in a few bits at most, whatever their size or compression.
+ */
+export async function differenceHash(file) {
+  const { data, info } = await sharp(file).greyscale().resize(9, 8, { fit: 'fill' }).raw().toBuffer({ resolveWithObject: true });
+  const at = (x, y) => data[(y * 9 + x) * info.channels];
+  let hex = '';
+  for (let y = 0; y < 8; y++) {
+    let byte = 0;
+    for (let x = 0; x < 8; x++) byte = (byte << 1) | (at(x, y) > at(x + 1, y) ? 1 : 0);
+    hex += byte.toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
 /** Oriented pixel size, when sharp can read the file. */
 export async function imageSize(file) {
   try {

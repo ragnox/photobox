@@ -6,9 +6,11 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import QRCode from 'qrcode';
-import { BROWSER_IMAGE_EXT, BROWSER_VIDEO_EXT, isMotionClip } from './media.js';
+import { BROWSER_IMAGE_EXT, BROWSER_VIDEO_EXT, MEDIA_EXT, isMotionClip } from './media.js';
 import { thumbPath, previewPath, makePreview } from './thumbs.js';
-import { requestToken, tokenCookie } from './remote.js';
+import { requestToken, tokenCookie, nativePairingPayload } from './remote.js';
+import { exportedCopies } from './manifest.js';
+import { sourceProblem } from './config.js';
 
 const run = promisify(execFile);
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
@@ -20,7 +22,10 @@ const CACHED = { ...SEND, maxAge: '365d', immutable: true };
 // What an unpaired device may load on the network listener: the pairing page and the CA it needs.
 const OPEN_PATHS = new Set(['/pair.html', '/pair.js', '/style.css', '/api/pair', '/photobox-ca.crt']);
 
-const viewFilter = (req) => ({ view: req.query.view ?? 'all', albumId: Number(req.query.album) || null });
+const viewFilter = (req) => ({
+  view: req.query.view ?? 'all', albumId: Number(req.query.album) || null, sourceId: Number(req.query.source) || null,
+});
+const sourceName = (body) => (typeof body?.name === 'string' && body.name.trim().slice(0, 100)) || null;
 
 /** Send a photo or video file; motion clips ("X.MP") are MP4s under a name browsers don't know. */
 function sendMedia(res, file) {
@@ -36,9 +41,12 @@ function parseCursor(value) {
 /**
  * The app for one listener. The local one (127.0.0.1) answers only to localhost
  * and can do everything. The network one (`remote`) lets paired devices browse
- * and favorite; managing the library, pairing and devices stays on this computer.
+ * and favorite, plus back up originals through the native API; managing the library,
+ * pairing and devices stays on this computer.
  */
-export function createApp({ library, indexer, watcher, config, network = null }, { remote = false } = {}) {
+const showInFinder = (file) => run('open', ['-R', file]);
+
+export function createApp({ library, indexer, watcher, config, network = null, uploads = null, backup = null, hostControl = null, reveal = showInFinder }, { remote = false } = {}) {
   const app = express();
   app.disable('x-powered-by');
 
@@ -57,7 +65,14 @@ export function createApp({ library, indexer, watcher, config, network = null },
       next();
     });
   }
-  // Only JSON writes: blocks cross-site form posts.
+  // Native tus requests bypass JSON parsing, but require a bearer token in addition
+  // to the listener's device authentication. Cookies cannot authorize binary writes.
+  app.all(['/api/uploads', '/api/uploads/:id'], async (req, res) => {
+    if (!remote || !uploads) return res.status(403).json({ error: 'Uploads require the paired HTTPS listener' });
+    await uploads.handle(req, res);
+  });
+
+  // Only JSON writes outside the authenticated native upload routes.
   app.use((req, res, next) => {
     if (!['GET', 'HEAD'].includes(req.method) && !(req.headers['content-type'] ?? '').startsWith('application/json')) {
       return res.status(415).json({ error: 'Expected application/json' });
@@ -67,10 +82,39 @@ export function createApp({ library, indexer, watcher, config, network = null },
   app.use(express.json());
   app.use(express.static(PUBLIC_DIR));
 
+  app.post('/api/assets/check', async (req, res) => {
+    if (!remote || !uploads) return res.status(403).json({ error: 'Backup checks require the paired HTTPS listener' });
+    res.json(await uploads.check(req.headers.authorization, req.body?.sha256));
+  });
+
+  app.get('/api/backup/capabilities', (req, res) => {
+    if (!remote || !uploads) return res.status(403).json({ error: 'Backup capabilities require the paired HTTPS listener' });
+    uploads.authenticate(req.headers.authorization);
+    res.json({ version: 1, tusVersion: '1.0.0', maxFileBytes: config.uploadMaxBytes, extensions: [...MEDIA_EXT].sort() });
+  });
+
   const hostOnly = (req, res, next) => {
     if (remote) return res.status(403).json({ error: 'Only available on the computer running Photobox' });
     next();
   };
+
+  app.get('/api/host', hostOnly, (req, res) => {
+    if (!hostControl) return res.status(503).json({ error: 'Host control is unavailable' });
+    res.json(hostControl.info());
+  });
+  app.post('/api/host/backup-directory', hostOnly, async (req, res) => {
+    if (!hostControl) return res.status(503).json({ error: 'Host control is unavailable' });
+    res.json(await hostControl.setBackupDirectory(req.body?.path));
+  });
+  app.post('/api/host/retry', hostOnly, (req, res) => {
+    backup?.request(true);
+    res.json({ ok: true });
+  });
+  app.post('/api/host/shutdown', hostOnly, (req, res) => {
+    if (!hostControl) return res.status(503).json({ error: 'Host control is unavailable' });
+    res.once('finish', () => setImmediate(() => hostControl.shutdown().catch(console.error)));
+    res.status(202).json({ ok: true });
+  });
 
   const scanInBackground = (source) => indexer.scanSource(source).catch((err) => indexer.error(source.path, err));
 
@@ -80,10 +124,25 @@ export function createApp({ library, indexer, watcher, config, network = null },
     return media;
   };
 
+  // The copy in your library folder, found through its manifest: the archive, else where phone backups are exported to.
+  const libraryFolder = config.archive?.root ?? config.backupDir;
+  const libraryCopy = libraryFolder ? exportedCopies(libraryFolder) : async () => null;
+
+  /** Details plus where the photo is: the copy in the library folder first, then the originals it was read from. */
+  async function details(id) {
+    const d = library.mediaDetails(id);
+    if (!d) return null;
+    const copy = d.sha256 ? await libraryCopy(d.sha256) : null;
+    const exists = async (file) => (await fs.promises.stat(file).catch(() => null))?.isFile() ?? false;
+    return { ...d, copy: copy && await exists(copy) ? copy : null };
+  }
+
   app.get('/api/status', (req, res) => {
     res.json({
       version: indexer.version, indexing: indexer.status, stats: library.stats(), sources: library.sources(), platform: process.platform,
       remote, device: req.device?.name ?? null, network: !remote && network ? network.info() : null,
+      backup: !remote && backup ? { ...backup.status, destination: config.backupDir } : null,
+      uploads: !remote && uploads ? uploads.progress() : null,
     });
   });
 
@@ -102,10 +161,10 @@ export function createApp({ library, indexer, watcher, config, network = null },
     res.json(library.albums().map((a) => ({ ...a, v: a.cover ? library.media(a.cover).hash.slice(0, 10) : null })));
   });
 
-  app.get('/api/media/:id', (req, res) => {
-    const details = library.mediaDetails(Number(req.params.id));
-    if (!details) return res.status(404).json({ error: 'Not found' });
-    res.json(details);
+  app.get('/api/media/:id', async (req, res) => {
+    const d = await details(Number(req.params.id));
+    if (!d) return res.status(404).json({ error: 'Not found' });
+    res.json(d);
   });
 
   app.get('/api/media/:id/thumb', (req, res) => {
@@ -149,17 +208,32 @@ export function createApp({ library, indexer, watcher, config, network = null },
     if (!media) return;
     library.setFavorite(media.id, Boolean(req.body?.favorite));
     indexer.changed();
+    backup?.request(true);
     res.json({ favorite: Boolean(req.body?.favorite), version: indexer.version });
   });
 
+  // Show one of the photo's files in Finder: the one asked for, else the copy in the library folder, else an original.
   app.post('/api/media/:id/reveal', hostOnly, async (req, res) => {
-    const media = mediaOr404(req, res);
-    if (!media) return;
-    const file = library.primaryPath(media.id);
+    const d = await details(Number(req.params.id));
+    if (!d) return res.status(404).json({ error: 'Not found' });
+    const known = [d.copy, ...d.files.map((f) => f.path), ...d.versions.flatMap((v) => v.files.map((f) => f.path))].filter(Boolean);
+    const file = req.body?.path ? known.find((p) => p === req.body.path) : known[0];
     if (process.platform !== 'darwin') return res.status(501).json({ error: 'Only supported on macOS' });
     if (!file) return res.status(404).json({ error: 'File is no longer on disk' });
-    await run('open', ['-R', file]).catch(() => {});
+    await reveal(file).catch(() => {});
     res.json({ ok: true });
+  });
+
+  // The user says this photo and one shown as its version are different photos.
+  app.post('/api/media/:id/separate', hostOnly, async (req, res) => {
+    const media = mediaOr404(req, res);
+    if (!media) return;
+    const other = library.media(Number(req.body?.from));
+    if (!other || (other.superseded_by !== media.id && media.superseded_by !== other.id)) {
+      return res.status(400).json({ error: 'Not a version of this photo' });
+    }
+    await indexer.keepApart(media.id, other.id);
+    res.json({ ok: true, version: indexer.version });
   });
 
   app.post('/api/sources', hostOnly, async (req, res) => {
@@ -172,18 +246,26 @@ export function createApp({ library, indexer, watcher, config, network = null },
       return res.status(400).json({ error: `Folder not found: ${dir}` });
     }
     if (!stat.isDirectory()) return res.status(400).json({ error: `Not a folder: ${dir}` });
-    if (dir === config.dataDir || dir.startsWith(config.dataDir + path.sep)) {
-      return res.status(400).json({ error: "That's Photobox's own cache folder" });
-    }
-    const source = library.addSource(dir);
+    const problem = sourceProblem(dir, config);
+    if (problem) return res.status(400).json({ error: problem });
+    const source = library.addSource(dir, null, sourceName(req.body));
     watcher.watchSource(source);
     scanInBackground(source);
     res.json(source);
   });
 
+  app.post('/api/sources/:id/name', hostOnly, (req, res) => {
+    const source = library.source(Number(req.params.id));
+    if (!source) return res.status(404).json({ error: 'Not found' });
+    library.setSourceName(source.id, sourceName(req.body));
+    indexer.changed();
+    res.json(library.source(source.id));
+  });
+
   app.delete('/api/sources/:id', hostOnly, async (req, res) => {
     const source = library.source(Number(req.params.id));
     if (!source) return res.status(404).json({ error: 'Not found' });
+    if (source.managed) return res.status(409).json({ error: source.managed === 'archive' ? "That's the archive's own photos" : 'Backup inbox sources are managed by Photobox' });
     await watcher.unwatch(source.id);
     await indexer.removeSource(source.id);
     res.json({ ok: true });
@@ -217,7 +299,11 @@ export function createApp({ library, indexer, watcher, config, network = null },
     const info = network.info();
     const links = await Promise.all(info.urls.map(async (base) => {
       const url = `${base}/pair.html#${code}`;
-      return { url, qr: await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }) };
+      const payload = nativePairingPayload(network, base, code, expiresAt);
+      return {
+        url, qr: await QRCode.toString(url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }),
+        native: { payload, qr: await QRCode.toString(payload, { type: 'svg', margin: 4, errorCorrectionLevel: 'M' }) },
+      };
     }));
     res.json({ expiresAt, links, fingerprint: info.fingerprint });
   });

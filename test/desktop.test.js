@@ -1,0 +1,70 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { syncStatus } from '../desktop/status.js';
+import { prepareDesktopHost } from '../desktop/preferences.js';
+import { loadHostSettings } from '../src/host-settings.js';
+import { startPhotobox } from '../src/app.js';
+
+test('tray distinguishes receiving/verifying progress, pending exports, failures and ready state', () => {
+  const status = { network: { urls: ['https://host:4568'] }, backup: { configured: true, received: 3, indexed: 3, exported: 3 }, indexing: { running: false } };
+  assert.equal(syncStatus(status).busy, false);
+  assert.match(syncStatus(status).title, /received photos export verified/);
+  status.uploads = { transfers: [{ active: true, phase: 'receiving', filename: 'camera.mov', bytesDone: 50, totalBytes: 100 }] };
+  assert.equal(syncStatus(status).progress, 0.5);
+  assert.match(syncStatus(status).title, /Receiving/);
+  status.uploads.transfers[0].phase = 'verifying';
+  status.uploads.transfers[0].bytesDone = 100;
+  assert.equal(syncStatus(status).busy, true, '100% bytes is still busy until verification completes');
+  status.uploads.transfers = [];
+  status.backup.exported = 2;
+  assert.match(syncStatus(status).title, /awaiting export/);
+  status.backup.error = 'Destination is unavailable';
+  assert.equal(syncStatus(status).level, 'error');
+  assert.match(syncStatus(status).detail, /unavailable/);
+  assert.equal(syncStatus(null, 'worker stopped').level, 'error');
+});
+
+test('first desktop launch configures phone access and a separate export folder, preserving later choices', async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-desktop-options-'));
+  t.after(() => fs.rm(tmp, { recursive: true, force: true }));
+  const data = path.join(tmp, 'data');
+  const initial = prepareDesktopHost(data, { smoke: true, home: tmp });
+  assert.equal(initial.listen, '127.0.0.1');
+  assert.equal(initial.remotePort, 0);
+  assert.notEqual(initial.backupDir, data);
+  assert.ok((await fs.stat(initial.backupDir)).isDirectory());
+  assert.deepEqual(prepareDesktopHost(data, { smoke: false, home: '/unrelated-home' }), initial);
+  assert.equal(loadHostSettings(data).backupDir, initial.backupDir);
+});
+
+test('host settings and validated export changes survive restart, without exposing remote control', async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-host-settings-'));
+  const dataDir = path.join(tmp, 'data');
+  const first = path.join(tmp, 'first');
+  const second = path.join(tmp, 'second');
+  await fs.mkdir(first); await fs.mkdir(second);
+  let app = await startPhotobox({ dataDir, port: 0, listen: '127.0.0.1', remotePort: 0, backupDir: first, managedBy: 'desktop' });
+  t.after(async () => { await app.close(); await fs.rm(tmp, { recursive: true, force: true }); });
+  const call = (route, body) => fetch(`${app.url}${route}`, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await (await call('/api/host')).json()).managedBy, 'desktop');
+  assert.equal((await call('/api/host/backup-directory', { path: dataDir })).status, 400);
+  assert.equal((await call('/api/host/backup-directory', { path: path.join(tmp, 'missing') })).status, 400);
+  await assert.rejects(fs.stat(path.join(tmp, 'missing')), { code: 'ENOENT' });
+  assert.equal(app.config.backupDir, first);
+  assert.equal((await call('/api/host/backup-directory', { path: second })).status, 200);
+  assert.equal(loadHostSettings(dataDir).backupDir, second);
+  const fingerprint = app.network.fingerprint;
+  await app.close();
+  app = await startPhotobox({ dataDir });
+  assert.equal(app.config.backupDir, second);
+  assert.equal(app.config.listen, '127.0.0.1');
+  assert.equal(app.config.remotePort, 0);
+  assert.equal(app.network.fingerprint, fingerprint, 'settings restart preserves the phone trust identity');
+  assert.equal((await call('/api/host/backup-directory', { path: null })).status, 200);
+  await app.close();
+  app = await startPhotobox({ dataDir });
+  assert.equal(app.config.backupDir, null, 'explicitly disabling export remains disabled');
+});

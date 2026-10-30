@@ -102,7 +102,9 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 .nav a.active, .albums a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .albums a { height: 46px; gap: 10px; padding-left: 6px; }
 .albums img, .albums .cover { width: 34px; height: 34px; border-radius: 8px; object-fit: cover; background: var(--tile); flex: none; }
-.albums .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.albums .album-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.albums .name { overflow: hidden; text-overflow: ellipsis; }
+.albums .src { font-size: 11px; font-weight: 400; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .albums .count { color: var(--muted); font-size: 12px; }
 .sidebar .note { margin: 4px 12px; }
 
@@ -110,9 +112,22 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 .sources, .devices { display: flex; flex-direction: column; gap: 2px; }
 .source, .device { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 8px; }
 .source:hover, .device:hover { background: var(--hover); }
-.source .path { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.source.active { background: var(--accent-soft); }
+.source .src-link { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.source .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source.active .name { color: var(--accent); font-weight: 600; }
+.source .path { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .source .icon-btn, .device .icon-btn { width: 28px; height: 28px; opacity: 0; }
 .source:hover .icon-btn, .source .icon-btn:focus-visible, .device:hover .icon-btn, .device .icon-btn:focus-visible { opacity: 1; }
+.source .rename {
+  flex: 1; min-width: 0; height: 30px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
+}
+.source .rename:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* A source's buttons take no room until needed, so its name fits. */
+.source .icon-btn { display: none; }
+.source:hover .icon-btn, .source:focus-within .icon-btn { display: inline-grid; }
+.source.renaming > .muted, .source.renaming .icon-btn { display: none; }
 .source .icon-btn svg, .device .icon-btn svg, .device > .i, .connect-btn .i { width: 15px; height: 15px; }
 .stats { margin: 22px 12px 0; }
 
@@ -230,6 +245,15 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 .lb-info a { color: var(--accent); }
 .lb-info .desc { font-size: 15px; margin: -6px 0 18px; }
 .chip { display: inline-block; padding: 2px 9px; margin: 2px 4px 2px 0; border-radius: 999px; background: var(--hover); font-size: 12px; }
+.lb-info a.chip { color: inherit; font-weight: 400; }
+.lb-info a.chip:hover { background: var(--accent-soft); color: var(--accent); }
+.lb-info .place { margin-top: 8px; font-size: 12px; }
+.lb-info .place > span { color: var(--muted); display: block; }
+.lb-info .place .btn { margin-top: 4px; }
+.link { display: block; padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer; text-align: left; overflow-wrap: anywhere; font-size: 12px; }
+.link:hover { text-decoration: underline; }
+.btn.small { height: 26px; padding: 0 10px; font-size: 12px; }
+.name-row { margin-top: 8px; }
 
 /* --- dialog ----------------------------------------------------------- */
 
@@ -260,6 +284,9 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 .connect-btn { margin: 8px 12px 0; height: 32px; font-size: 13px; }
 .qr { width: 228px; height: 228px; margin: 4px auto 10px; padding: 10px; border-radius: 14px; background: #fff; }
 .qr svg { display: block; width: 100%; height: 100%; }
+.qr.native-qr { width: min(400px, 100%); height: auto; aspect-ratio: 1; }
+#pair-client { margin: 0 0 14px 8px; }
+#pair-native-payload { width: 100%; margin: 8px 0; font: 11px ui-monospace, monospace; }
 #pair-address { display: block; margin: 0 auto 8px; height: 34px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 #pair-url { text-align: center; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
@@ -292,6 +319,19 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
   max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 12px;
   background: var(--text); color: var(--bg); font-weight: 500; box-shadow: 0 8px 30px rgba(0,0,0,.25);
 }
+/* A photo's right-click menu in a browser; the desktop app shows a native one. */
+.ctx-menu {
+  position: fixed; z-index: 80; min-width: 200px; padding: 5px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  box-shadow: 0 10px 34px rgba(0,0,0,.22);
+}
+.ctx-menu button {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px; width: 100%; height: 28px;
+  padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left;
+}
+.ctx-menu button:hover, .ctx-menu button:focus-visible { background: var(--accent); color: #fff; outline: none; }
+.ctx-menu kbd { font: inherit; color: var(--muted); }
+.ctx-menu button:hover kbd, .ctx-menu button:focus-visible kbd { color: inherit; }
 .drop-overlay {
   position: fixed; inset: 10px; z-index: 70; pointer-events: none;
   display: grid; place-items: center;

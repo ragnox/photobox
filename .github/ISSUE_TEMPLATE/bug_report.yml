@@ -1,0 +1,23 @@
+name: Bug report
+description: Report a reproducible Photobox problem
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include expected behavior and steps to reproduce. Use synthetic media when possible.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions and platform
+      placeholder: Photobox version, macOS/Android version, Apple Silicon or Intel
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Use the menu-bar Show Logs action. Remove device tokens, pairing data, private paths, GPS and personal media before sharing.
+      render: text

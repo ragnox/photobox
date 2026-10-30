@@ -44,6 +44,9 @@ function stripEdited(stem) {
   return stem;
 }
 
+/** Is this Google's edited copy of a photo ("IMG_1-edited.jpg", "IMG_1(1)-bearbeitet.jpg")? */
+export const isEditedName = (name) => stripEdited(stripMediaExt(name)) !== stripMediaExt(name);
+
 /** What kind of JSON is this? 'sidecar' (per photo), 'album' (album metadata) or null. */
 // An album folder's own file, in the export's language. Newer exports may put only the title in it.
 const ALBUM_FILE = /^(metadata|metadaten|métadonnées|metadatos|metadati|metadados)(\(\d+\))?\.json$/i;

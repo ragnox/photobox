@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('photobox', {
   platform: process.platform,
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   reveal: (path) => ipcRenderer.send('reveal', path),
+  contextMenu: (items) => ipcRenderer.invoke('context-menu', items),
   setProgress: (fraction) => ipcRenderer.send('progress', fraction),
   pathForFile: (file) => webUtils.getPathForFile(file),
   onMenu: (handler) => ipcRenderer.on('menu', (_event, action) => handler(action)),
