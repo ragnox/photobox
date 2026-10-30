@@ -58,7 +58,7 @@ It also handles these:
 - **Versions of one shot.** The same photo with different bytes (recompressed by Google's "Storage saver", in a second Google account, or Google's smaller album copy) is shown once, as its best version: a phone backup's original, else the biggest file. A version needs the same capture time to the sub-second and camera from EXIF (videos: creation time and length), the same shape, and a thumbnail that looks the same. Pixel renderings of one capture (`.PORTRAIT-01.COVER`, `.ACTION_PAN-02.ORIGINAL`) and edited copies (`-edited`, `~2`) stay separate photos. The info panel lists the other versions, with **Not the same photo** to show both again.
 - **Albums.** Folders with an album `metadata.json` become albums, also when it holds only a title (newer exports) or is named in the export's language. An album without a title is named after its folder. Year folders aren't albums. Albums belong to the folder they were read from, so two Google accounts can each have a "Trip".
 - **Several Google accounts.** Extract each account's Takeout into its own folder and add each with a name ("Google, second account"); the pencil next to a folder renames it. Click a folder to see only the photos from it; the info panel says where each photo came from.
-- **Dates.** EXIF with a time zone comes first, then the Takeout timestamp, then EXIF without a zone, then a date in the file name, then the upload date, then the file's modified time. A UTC time is shown in the time zone of the photo's GPS location, so a Tokyo photo shows Tokyo time.
+- **Dates.** EXIF with a time zone comes first, then the Takeout timestamp, then EXIF without a zone, then a date in the file name, then the upload date, then the file's modified time. A UTC time is shown in the time zone of the photo's GPS location, so a Tokyo photo shows Tokyo time. For a file uploaded from a computer (a WhatsApp image, say) or one Google made (`-COLLAGE`, `-ANIMATION`, `-MOTION`), Google's timestamp is when it was uploaded or made, so a date in the name comes before it. An archive's manifest dates only photos whose originals Photobox can't read; an original is dated by the rules above.
 - **Live photos.** A short clip next to a still with the same name becomes that photo's motion: `IMG_1.HEIC` + `IMG_1.MOV`, and Pixel motion photos, which Takeout splits into `PXL_1.MP.jpg` + `PXL_1.MP`. It's hidden from the grid and plays when you press **LIVE** or `L`.
 - **Trashed items** in the export are skipped.
 - **HEIC and RAW.** On macOS these are decoded with `sips`. Videos get thumbnails and metadata from `ffmpeg`/`ffprobe`.
@@ -108,6 +108,9 @@ place it was taken. After that the folder is all you need: no Takeout, no Photob
   file first, so an interrupted export never leaves half a photo.
 - **Run it again** to copy only what's new. A file you delete from the export is copied again
   next time. To drop a photo for good, delete it from the source.
+- **Checked, not reread.** What's already in the export is checked against its SHA-256. A file whose
+  inode, size and times haven't changed since it was last read is read again only once a week, so a
+  rerun takes seconds while damage that leaves those alone still shows within a week.
 - **Better versions replace older ones.** When a better version of an exported photo turns up
   (from a second account, say), it is copied under a new name (`PXL_1 (2).jpg`), and once it is
   verified the older file moves to `.photobox/superseded/` in the export, never deleted. The

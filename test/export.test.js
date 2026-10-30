@@ -169,6 +169,35 @@ test('never overwrites, and running again copies only what is new or missing', a
   assert.deepEqual(await files(), ['2021/01/a.jpg', '2021/01/b (2).jpg', '2021/01/b.jpg', '2021/01/c.jpg', MANIFEST]);
 });
 
+test('an exported file that has not changed is not read again for a week; a changed one is read again at once', async (t) => {
+  const { library, add, dest } = await setup(t);
+  const opts = { taken: '2021-01-10T10:00:00Z', local: '2021-01-10 11:00:00' };
+  await add('a.jpg', opts);
+  await add('b.jpg', opts);
+  await exportLibrary(library, dest);
+  // Noted by real path, the same whether the export made the folder or found it (macOS: /var is /private/var).
+  const [a, b] = ['a.jpg', 'b.jpg'].map((name) => path.join(dest, '2021/01', name));
+  const real = await fs.realpath(dest);
+  const checked = (file) => library.exportCheck(path.join(real, path.relative(dest, file)))?.checked_at;
+  const first = { a: checked(a), b: checked(b) };
+  assert.ok(first.a && first.b, 'the copies were checked when they were made');
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  let again = await exportLibrary(library, dest);
+  assert.deepEqual([again.copied, again.present], [0, 2]);
+  assert.deepEqual({ a: checked(a), b: checked(b) }, first, 'neither was read again');
+
+  // Touched: its stamps changed, so it is read again. A week on, everything is.
+  await fs.utimes(a, new Date(), new Date());
+  await exportLibrary(library, dest);
+  assert.ok(checked(a) > first.a, 'the touched file was read again');
+  assert.equal(checked(b), first.b);
+  library.db.prepare('UPDATE export_checks SET checked_at = checked_at - ?').run(8 * 24 * 3600_000);
+  again = await exportLibrary(library, dest);
+  assert.ok(checked(b) > first.b, 'a week-old check is done again');
+  assert.deepEqual([again.copied, again.present], [0, 2]);
+});
+
 test('files moved or renamed inside the export are not copied again', async (t) => {
   const { library, add, dest, files, manifest } = await setup(t);
   const opts = { taken: '2021-01-10T10:00:00Z', local: '2021-01-10 11:00:00' };

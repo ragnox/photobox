@@ -193,6 +193,11 @@ export function sidecarMeta(data) {
     favorite: Boolean(data.favorited),
     archived: Boolean(data.archived),
     trashed: Boolean(data.trashed),
+    // For a file uploaded from a computer, or one Google made (a collage, an animation), Google's time
+    // is when it was uploaded or made unless the file itself carried a date: a date in its name is better.
+    // Older exports leave out where a creation came from; its name still says what it is.
+    guessed: Boolean(data.googlePhotosOrigin?.webUpload || data.googlePhotosOrigin?.composition ||
+      /-(collage|animation|motion)\.\w+$/i.test(data.title ?? '')),
     people: (data.people ?? []).map((p) => p?.name).filter(Boolean),
   };
 }

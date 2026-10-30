@@ -89,9 +89,11 @@ export async function extractMeta(file, kind, stat, sc) {
   if (sc?.localTime && !sc.fromUpload) date = { takenAt: sc.takenAt, localTime: sc.localTime, dateSource: sc.dateSource };
   else if (info.date?.instant != null) date = { takenAt: info.date.instant, localTime: info.date.local ?? wallClock(info.date.instant), dateSource: 'exif' };
   else if (sc?.fromUpload && sc.takenAt != null) date = { takenAt: sc.takenAt, localTime: info.date?.local ?? (zone ? wallClock(sc.takenAt) : sc.localTime ?? wallClock(sc.takenAt)), dateSource: 'capture' };
-  else if (sc?.takenAt) date = { takenAt: sc.takenAt, localTime: info.date?.local ?? wallClock(sc.takenAt), dateSource: 'takeout' };
+  else if (sc?.takenAt && !sc.guessed) date = { takenAt: sc.takenAt, localTime: info.date?.local ?? wallClock(sc.takenAt), dateSource: 'takeout' };
   else if (info.date) date = { takenAt: localToInstant(info.date.local), localTime: info.date.local, dateSource: 'exif' };
   else if (fromName) date = { takenAt: localToInstant(fromName), localTime: fromName, dateSource: 'filename' };
+  // Google's time for a computer upload or a collage of its own: when it was uploaded or made.
+  else if (sc?.takenAt) date = { takenAt: sc.takenAt, localTime: wallClock(sc.takenAt), dateSource: 'upload' };
   else if (sc?.uploadedAt) date = { takenAt: sc.uploadedAt, localTime: wallClock(sc.uploadedAt), dateSource: 'upload' };
   else date = { takenAt: Math.floor(stat.mtimeMs), localTime: formatLocal(stat.mtimeMs), dateSource: 'file' };
 
@@ -237,6 +239,16 @@ export class Indexer extends EventEmitter {
     });
   }
 
+  /**
+   * Is the item dated by Google's guess in this sidecar (a computer upload, a collage) taken for a capture
+   * time, as Photobox did before it knew better? Then its date is worked out again, file unchanged or not.
+   */
+  #datedByGuess(mediaId, sc) {
+    if (!sc?.guessed || sc.takenAt == null) return false;
+    const media = this.library.media(mediaId);
+    return media?.date_source === 'takeout' && media.taken_at === sc.takenAt;
+  }
+
   /** Which items are versions of one shot, among everything in the library. Returns whether that changed. */
   #resolveVersions() {
     return this.library.applyVersions(findVersions(this.library.versionCandidates(), this.library.separatePairs()));
@@ -377,8 +389,8 @@ export class Indexer extends EventEmitter {
     let listed = exported ? exported.find(file) ?? byHash(existing && this.library.media(existing.media_id)?.hash) : null;
     let sidecarPath = sidecar?.entry.path ?? listed?.key ?? null;
     const albumIds = (meta) => [...new Set([album, ...(meta?.albums ?? [])].filter(Boolean))].map((name) => this.library.albumId(name, source.id));
-    if (!upload && existing?.sha256 && existing.size === stat.size &&
-        existing.mtime_ns === String(stamps.mtimeNs) && existing.ctime_ns === String(stamps.ctimeNs) && existing.sidecar === sidecarPath) {
+    if (!upload && existing?.sha256 && existing.size === stat.size && existing.mtime_ns === String(stamps.mtimeNs) &&
+        existing.ctime_ns === String(stamps.ctimeNs) && existing.sidecar === sidecarPath && !this.#datedByGuess(existing.media_id, sidecar && sidecarMeta(sidecar.entry.data))) {
       // The file is as it was, but its albums may not be (an album Photobox learned to read later).
       const ids = albumIds(listed && manifestMeta(listed.entry));
       if (this.library.setFileAlbums(existing.id, ids)) this.#albumsChanged = true;
@@ -424,10 +436,12 @@ export class Indexer extends EventEmitter {
         created = true;
       } else if (sc) {
         // An upload without a capture timestamp must not replace a stronger date.
-        const rank = sc.fromManifest ? sc.dateSource : sc.fromUpload ? (sc.takenAt != null ? 'capture' : 'upload') : 'takeout';
-        const betterDate = DATE_RANK[rank] > DATE_RANK[media.date_source];
+        const rank = sc.fromManifest ? sc.dateSource : sc.fromUpload ? (sc.takenAt != null ? 'capture' : 'upload') : sc.guessed ? 'upload' : 'takeout';
+        // A manifest's date only stands in for photos whose originals Photobox can't read: an original
+        // is dated by today's rules, a manifest by the rules of the day it was exported.
+        const betterDate = DATE_RANK[rank] > DATE_RANK[media.date_source] && !(sc.fromManifest && this.library.hasOriginal(media.id));
         const entryChanged = sc.fromManifest && existing?.sidecar !== sidecarPath;
-        if (betterDate || entryChanged || (!sc.fromUpload && !this.library.hasSidecar(media.id))) {
+        if (betterDate || entryChanged || this.#datedByGuess(media.id, sc) || (!sc.fromUpload && !this.library.hasSidecar(media.id))) {
           const meta = await extractMeta(file, kind, stat, sc);
           // A manifest's date replaces only a worse one, and the name goes with it: the archive's
           // sorted copy of a photo dated by its own file doesn't undo a Google sidecar's exact time.

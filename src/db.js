@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS backup_exports (
   mtime_ns TEXT NOT NULL,
   ctime_ns TEXT NOT NULL
 );
+
+-- Exported files whose SHA-256 an export checked, and the file's stamps then: unchanged, it isn't read again for a while.
+CREATE TABLE IF NOT EXISTS export_checks (
+  path TEXT PRIMARY KEY,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  dev TEXT NOT NULL,
+  ino TEXT NOT NULL,
+  mtime_ns TEXT NOT NULL,
+  ctime_ns TEXT NOT NULL,
+  checked_at INTEGER NOT NULL
+);
 `;
 
 // A superseded version counts as the version that replaced it: it stays in its album and source.
@@ -374,6 +386,28 @@ export class Library {
 
   hasSidecar(mediaId) {
     return Boolean(this.q('SELECT 1 FROM files WHERE media_id = ? AND sidecar IS NOT NULL').get(mediaId));
+  }
+
+  /** What an export last found an exported file to be, by its absolute path (see export_checks). */
+  exportCheck(file) {
+    return this.q('SELECT * FROM export_checks WHERE path = ?').get(file);
+  }
+
+  rememberExportCheck(file, { sha256, size, dev, ino, mtimeNs, ctimeNs }) {
+    this.q(`INSERT INTO export_checks (path, sha256, size, dev, ino, mtime_ns, ctime_ns, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(path) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, dev = excluded.dev, ino = excluded.ino,
+        mtime_ns = excluded.mtime_ns, ctime_ns = excluded.ctime_ns, checked_at = excluded.checked_at`)
+      .run(file, sha256, size, dev, ino, mtimeNs, ctimeNs, Date.now());
+  }
+
+  /** Checks older than `before` (epoch ms) are read again anyway, so they go. */
+  forgetExportChecks(before) {
+    this.q('DELETE FROM export_checks WHERE checked_at < ?').run(before);
+  }
+
+  /** Has the item a file outside the archive: an original, not a copy an export made? */
+  hasOriginal(mediaId) {
+    return Boolean(this.q("SELECT 1 FROM files f JOIN sources s ON s.id = f.source_id WHERE f.media_id = ? AND s.managed IS NOT 'archive'").get(mediaId));
   }
 
   /** Versions follow: a favorite stays one (or stays not one) whichever version is shown. */

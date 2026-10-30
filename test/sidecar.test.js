@@ -113,6 +113,19 @@ test('sidecarMeta ignores 0/0 locations and empty fields', () => {
   assert.deepEqual(meta.people, ['Anna']);
 });
 
+test("Google's time is a guess for computer uploads and Google's own collages, not for phone uploads", () => {
+  const origin = (googlePhotosOrigin) => sidecarMeta({ title: 'a.jpg', photoTakenTime: { timestamp: '1735398014' }, googlePhotosOrigin }).guessed;
+  assert.equal(origin({ webUpload: { computerUpload: {} } }), true);
+  assert.equal(origin({ composition: { type: 'AUTO' } }), true);
+  assert.equal(origin({ mobileUpload: { deviceType: 'ANDROID_PHONE' } }), false);
+  assert.equal(origin(undefined), false);
+  // An older export without the origin: Google's creations are known by their names.
+  const named = (title) => sidecarMeta({ title, photoTakenTime: { timestamp: '1618327274' } }).guessed;
+  assert.equal(named('IMG_20201106_103539304_HDR-COLLAGE.jpg'), true);
+  assert.equal(named('20250911_102803-ANIMATION.gif'), true);
+  assert.equal(named('IMG_20201106_103539304_HDR.jpg'), false);
+});
+
 test('takeoutFolderKey is stable across zip parts', () => {
   assert.equal(
     takeoutFolderKey('/x/takeout-001/Takeout/Google Photos/Trip'),

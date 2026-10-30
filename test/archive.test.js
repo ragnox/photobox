@@ -367,3 +367,33 @@ test("a photo a source dated keeps that date and name when the archive lists it;
   assert.match(copy.shot_key, /\|edited$/);
   assert.equal(media(path.join(takeout, 'PXL_20240319_112129737~2.jpg')).superseded_by, copy.id, 'the better version is shown');
 });
+
+test("an archive's manifest doesn't date a photo whose original Photobox reads, in whichever order the folders are scanned", async (t) => {
+  for (const order of [['archive', 'takeout'], ['takeout', 'archive']]) {
+    const tmp = await tmpDir(t);
+    const root = path.join(tmp, 'Pictures');
+    const takeout = path.join(tmp, 'Takeout');
+    const put = async (file, data) => {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, data);
+    };
+    // A WhatsApp image a computer uploaded on 2024-12-28; an older export took that for when it was taken.
+    const name = 'WhatsApp Image 2024-11-20 at 21.16.25.jpeg';
+    const red = await jpeg(200, 0, 0);
+    await put(path.join(takeout, name), red);
+    await put(path.join(takeout, `${name}.supplemental-metadata.json`), JSON.stringify({
+      title: name, photoTakenTime: { timestamp: '1735398014' }, googlePhotosOrigin: { webUpload: { computerUpload: {} } },
+    }));
+    await put(path.join(root, '2024/12', name), red);
+    await writeManifest(root, { [`2024/12/${name}`]: {
+      hash: 'quick-1', sha256: createHash('sha256').update(red).digest('hex'), bytes: red.length, kind: 'image',
+      takenAt: new Date(1735398014000).toISOString(), localTime: '2024-12-28 16:00:14', dateSource: 'takeout',
+    } });
+    const { library, indexer } = openLibrary(loadConfig({ dataDir: path.join(tmp, 'data'), archive: initArchive(root, { dataDir: path.join(tmp, 'data') }) }), [takeout]);
+    const sources = { archive: library.sources().find((s) => s.managed === 'archive'), takeout: library.sources().find((s) => !s.managed) };
+    for (const which of order) await indexer.scanSource(sources[which]);
+    const m = library.media(library.fileByPath(path.join(root, '2024/12', name)).media_id);
+    library.close();
+    assert.deepEqual([m.local_time, m.date_source], ['2024-11-20 21:16:25', 'filename'], `scanned ${order.join(', then ')}`);
+  }
+});

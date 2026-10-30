@@ -161,6 +161,34 @@ test('the same shot from two Google accounts: the bigger file is shown, the othe
   assert.equal(library.stats().versions, 0);
 });
 
+test("a computer upload's or a Google collage's time gives way to the date in its name; a phone upload's doesn't", async (t) => {
+  const { put, library, indexer, source } = await setup(t);
+  const uploadTime = '1735398014'; // 2024-12-28 15:00:14 UTC, when the computer upload happened
+  const photo = async (rel, color, googlePhotosOrigin) => {
+    await put(rel, await jpeg(...color));
+    await put(`${rel}.supplemental-metadata.json`, JSON.stringify({ title: path.basename(rel), photoTakenTime: { timestamp: uploadTime }, googlePhotosOrigin }));
+  };
+  await photo('Photos from 2024/WhatsApp Image 2024-11-20 at 21.16.25.jpeg', [200, 0, 0], { webUpload: { computerUpload: {} } });
+  await photo('Photos from 2021/IMG_20200808_204646064_HDR-COLLAGE.jpg', [0, 200, 0], { composition: { type: 'AUTO' } });
+  await photo('Photos from 2024/IMG_20240101_120000.jpg', [0, 0, 200], { mobileUpload: { deviceType: 'ANDROID_PHONE' } });
+  await photo('Photos from 2024/scan.jpg', [200, 200, 0], { webUpload: { computerUpload: {} } });
+  await indexer.scanSource(source);
+  const dates = () => Object.fromEntries(library.db.prepare('SELECT filename, local_time, taken_at, date_source FROM media').all()
+    .map((m) => [m.filename, m.date_source === 'filename' ? [m.local_time, m.date_source] : [m.taken_at, m.date_source]]));
+  const expected = {
+    'WhatsApp Image 2024-11-20 at 21.16.25.jpeg': ['2024-11-20 21:16:25', 'filename'],
+    'IMG_20200808_204646064_HDR-COLLAGE.jpg': ['2020-08-08 20:46:46', 'filename'],
+    'IMG_20240101_120000.jpg': [1735398014000, 'takeout'],
+    'scan.jpg': [1735398014000, 'upload'],
+  };
+  assert.deepEqual(dates(), expected);
+
+  // A library that took Google's guess for the capture time puts it right on the next scan, files unchanged.
+  library.db.prepare("UPDATE media SET taken_at = ?, local_time = '2024-12-28 16:00:14', date_source = 'takeout'").run(1735398014000);
+  await indexer.scanSource(source);
+  assert.deepEqual(dates(), expected);
+});
+
 test('items indexed before versions existed get their shot key and thumbnail hash on the next scan', async (t) => {
   const { put, library, indexer, source } = await setup(t);
   await put('PXL_1.jpg', await photo(gradient, 50));

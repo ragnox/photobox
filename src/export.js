@@ -19,6 +19,9 @@ const COPY_WORKERS = 4;
 const SAVE_EVERY = 250;
 // Where exported files go once a better version of their photo replaced them.
 const ASIDE = '.photobox/superseded';
+// An exported file that hasn't changed since an export read it (same inode, size, modified and changed
+// times) isn't read again for this long. Then it is, so damage that leaves those alone shows within a week.
+const RECHECK_MS = 7 * 24 * 3600_000;
 
 const full = (dest, rel) => path.join(dest, ...rel.split('/'));
 const nameKey = (rel) => rel.normalize('NFC').toLowerCase();
@@ -126,7 +129,7 @@ export async function makeDirectory(dest, rel) {
 }
 
 /** Seal reused/moved files too: a hash alone does not persist their directory entry. */
-async function sealExport(dest, rel, sha256) {
+async function sealExport(library, dest, rel, sha256) {
   if (!await regularDestination(dest, rel)) throw new Error('Exported file is unavailable');
   const verified = await digestFile(full(dest, rel), true);
   if (verified.sha256 !== sha256) throw new Error('Export failed SHA-256 verification');
@@ -134,6 +137,27 @@ async function sealExport(dest, rel, sha256) {
     await syncDirectory(dir);
     if (dir === dest) break;
   }
+  await rememberCheck(library, full(dest, rel), verified);
+}
+
+/** Notes what an exported file was found to be, with the inode it has now, if it hasn't changed since. */
+async function rememberCheck(library, file, identity) {
+  const now = await fs.stat(file, { bigint: true });
+  if (Number(now.size) !== identity.size || String(now.mtimeNs) !== identity.mtimeNs || String(now.ctimeNs) !== identity.ctimeNs) return;
+  library.rememberExportCheck(file, { ...identity, dev: String(now.dev), ino: String(now.ino) });
+}
+
+/** An exported file's SHA-256 and size: read, or as an export found them if the file hasn't changed since (see RECHECK_MS). */
+async function checkedDigest(library, file) {
+  const stat = await fs.stat(file, { bigint: true });
+  const known = library.exportCheck(file);
+  if (known && Date.now() - known.checked_at < RECHECK_MS && known.size === Number(stat.size) && known.dev === String(stat.dev) &&
+      known.ino === String(stat.ino) && known.mtime_ns === String(stat.mtimeNs) && known.ctime_ns === String(stat.ctimeNs)) {
+    return { sha256: known.sha256, size: known.size };
+  }
+  const identity = await digestFile(file);
+  await rememberCheck(library, file, identity);
+  return identity;
 }
 
 /**
@@ -320,9 +344,10 @@ async function runExport(library, dest, { dryRun = false, onProgress = () => {},
   // Exported files of versions another version replaced: they keep their name (the new
   // version gets another) and stay listed until the new version is safely there.
   const retiring = [];
+  library.forgetExportChecks(Date.now() - RECHECK_MS);
   for (const [rel, entry] of Object.entries(previous?.items ?? {})) {
     if (typeof entry?.hash === 'string' && await regularDestination(dest, rel)) {
-      const identity = await digestFile(full(dest, rel));
+      const identity = await checkedDigest(library, full(dest, rel));
       const expected = entry.sha256 ?? byCacheKey.get(entry.hash)?.sha256;
       if (expected && identity.sha256 !== expected) continue;
       items[rel] = { ...entry, sha256: identity.sha256, bytes: identity.size };
@@ -378,7 +403,10 @@ async function runExport(library, dest, { dryRun = false, onProgress = () => {},
   if (dryRun) return result;
   await fs.mkdir(dest, { recursive: true });
   await syncDirectory(path.dirname(dest));
+  // Its real path, as a folder that was already there has: what an export checked is noted under that.
+  dest = await fs.realpath(dest);
 
+  const copied = new Set();
   let next = 0;
   let done = 0;
   let sinceSave = 0;
@@ -389,7 +417,9 @@ async function runExport(library, dest, { dryRun = false, onProgress = () => {},
       try {
         await validateDestination();
         await copyInto(job.source, dest, job.rel, job.takenAt, job.sha256);
-        result.verified.push({ mediaId: job.mediaId, sha256: job.sha256, rel: job.rel });
+        const item = { mediaId: job.mediaId, sha256: job.sha256, rel: job.rel };
+        result.verified.push(item);
+        copied.add(item);
         result.copied++;
       } catch (err) {
         delete items[job.rel];
@@ -406,8 +436,9 @@ async function runExport(library, dest, { dryRun = false, onProgress = () => {},
   await Promise.all(Array.from({ length: COPY_WORKERS }, worker));
   await saving;
   await validateDestination();
-  for (const item of [...result.verified]) {
-    try { await sealExport(dest, item.rel, item.sha256); } catch (err) {
+  // What was already here was read (or found unchanged) above; what this export copied is read once more, from disk.
+  for (const item of [...copied]) {
+    try { await sealExport(library, dest, item.rel, item.sha256); } catch (err) {
       result.verified.splice(result.verified.indexOf(item), 1);
       delete items[item.rel];
       result.skipped.push({ name: path.basename(item.rel), reason: err.message });
