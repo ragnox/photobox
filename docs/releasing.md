@@ -26,17 +26,12 @@ cannot create an Apple-issued signing identity from source alone.
 ## Developer ID and notarization
 
 The build imports the P12 through electron-builder and notarizes after signing.
-Keep these values in local environment/CI secrets, never in the checkout:
+Keep these values in the local environment, never in the checkout:
 
 - `CSC_LINK`: base64 P12 or supported electron-builder certificate location.
 - `CSC_KEY_PASSWORD`: P12 password.
 - `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`: notarytool credentials.
 - `PHOTOBOX_REQUIRE_SIGNING=1`: fail if signing or notarization is not configured.
-
-The release workflow maps GitHub secrets `MAC_CERTIFICATE_P12` and
-`MAC_CERTIFICATE_PASSWORD` to the CSC variables. Configure the Apple variables as
-repository secrets. When a P12 is configured, the workflow requires notarization
-credentials too instead of silently producing an unnotarized signed release.
 
 Verify a signed/notarized bundle with `codesign --verify --deep --strict` and
 `spctl --assess --type execute`. electron-notarize staples the accepted ticket.
@@ -46,7 +41,8 @@ and worker recovery from the installed app.
 ## Repository publication
 
 The source contains an MIT license, third-party notices, contribution/security
-guidance, issue/PR templates, Dependabot and CI. Repository visibility and pushing
+guidance and issue/PR templates. There is no GitHub CI: builds and tests run locally,
+so the project uses no GitHub Actions minutes. Repository visibility and pushing
 local commits are separate maintainer actions; adding these files does not itself
 publish a private GitHub repository. Before publication, inspect tracked files for
 personal libraries, credentials and signing material. `.data/`, fixtures, build
@@ -58,10 +54,9 @@ outputs, local Android configuration and signing keys are ignored.
 2. Pass host, desktop and Android checks. Keep physical-device acceptance distinct
    from JVM tests; see [android-verification.md](android-verification.md).
 3. Create/push the matching `v<package-version>` tag.
-4. The tag workflow builds/tests native arm64 and x64 DMGs, computes SHA-256 sums,
-   and assembles a draft GitHub release. Review its generated notes and publish it.
+4. Build and test the arm64 and x64 DMGs locally as above, each on its own
+   architecture, and attach them with their SHA-256 sums to a GitHub release.
 5. State whether the artifacts are Developer ID signed/notarized or ad-hoc builds.
 
-GitHub automatically offers the tagged source archive. Android's debug APK is an
-ordinary CI artifact; Android release signing/F-Droid distribution and automatic
-desktop updates remain separate work.
+GitHub automatically offers the tagged source archive. Android release signing,
+F-Droid distribution and automatic desktop updates remain separate work.

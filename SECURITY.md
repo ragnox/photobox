@@ -24,7 +24,7 @@ manually; there is no silent updater or third-party telemetry.
 
 ## Dependency tracking
 
-Dependabot tracks npm, Gradle and GitHub Actions. At this revision npm reports
+Dependencies aren't tracked automatically; `npm audit` checks the npm ones. At this revision npm reports
 GHSA-86w9-cpqp-85rv for node-forge 1.4.0, with no fixed upstream npm version.
 Photobox uses forge to construct its own local certificates, not to verify incoming
 RSA signatures; TLS and certificate verification use Node/OpenSSL and platform TLS.
