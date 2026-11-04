@@ -7,21 +7,25 @@ you delete a photo, and it keeps watching the folders for new photos.
 
 ## Run it
 
-**As a desktop app (macOS):**
+**As a desktop app (macOS on Apple silicon):** download the `.dmg` from
+[Releases](https://github.com/ragnox/photobox/releases), open it and drag Photobox to
+Applications. The app isn't notarized by Apple, so macOS blocks it the first time: open it
+once, then go to System Settings → Privacy & Security and click **Open Anyway**.
+
+To build it yourself (Node.js 22.13 or later):
 
 ```
 npm install
-npm run dist:mac     # builds dist/Photobox-0.1.0-arm64.dmg and dist/mac-arm64/Photobox.app
+npm run dist:mac     # builds dist/Photobox-<version>-arm64.dmg and dist/mac-arm64/Photobox.app
 ```
 
-Drag `Photobox.app` to Applications. A build you made yourself opens normally. The build
-isn't signed, so on another Mac macOS will block it the first time: open it once, then go to
-System Settings → Privacy & Security and click **Open Anyway**. During development,
-`npm run desktop` runs the app straight from source.
+A build you made yourself opens normally. During development, `npm run desktop` runs the
+app straight from source.
 
-**In the browser:**
+**In the browser** (Node.js 22.13 or later, any system):
 
 ```
+npm install
 npm start -- ~/Downloads/Takeout ~/Pictures/Camera --open
 ```
 
