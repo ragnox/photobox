@@ -3,7 +3,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { digestFile, isInside, syncDirectory } from './files.js';
+import { digestFile, isInside, syncDirectory, statOrNull } from './files.js';
 import { exportLibrary, regularDestination } from './export.js';
 
 const MARKER = '.photobox-backup.json';
@@ -128,7 +128,13 @@ export class BackupQueue {
     this.refreshMetadata = false;
     this.status.lastRun = Date.now();
     this.status.error = null;
-    const rows = this.library.q("SELECT * FROM backup_uploads WHERE state = 'received' ORDER BY created_at, id").all();
+    const rows = [];
+    for (const row of this.library.q("SELECT * FROM backup_uploads WHERE state = 'received' ORDER BY created_at, id").all()) {
+      if (!this.library.isDeleted(row.sha256)) { rows.push(row); continue; }
+      // Deleted in Photobox while it was on its way: the original in the inbox goes too (see deletions.js).
+      const file = this.uploads.destination(row);
+      if (await statOrNull(file) && this.library.deletedCopy(row.sha256, file, path.join(this.config.inboxDir, String(row.device_id)))) this.indexer.emit('deleted-found');
+    }
     Object.assign(this.status, { phase: 'indexing', done: 0, total: rows.length, currentFile: null });
     Object.assign(this.status, { received: rows.length, indexed: 0, exported: 0, failed: 0 });
     let destination = null;

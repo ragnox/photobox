@@ -31,6 +31,7 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
   layers: '<path d="m12 2 10 5-10 5L2 7Z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>',
+  trash: '<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/>',
 };
 const icon = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 for (const el of document.querySelectorAll('[data-icon]')) el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon));
@@ -117,6 +118,7 @@ const state = {
   running: false,
   remote: false,
   network: null,
+  canDelete: false,
 };
 const months = new Map(); // 'YYYY-MM' -> { el }
 const days = new Map(); // 'YYYY-MM-DD' -> { el, header, rows, items }
@@ -386,7 +388,7 @@ function parseHash() {
   if (album) return { view: 'all', album: Number(album[1]), source: null };
   const source = h.match(/^source\/(\d+)/);
   if (source) return { view: 'all', album: null, source: Number(source[1]) };
-  return { view: ['favorites', 'videos', 'archive'].includes(h) ? h : 'all', album: null, source: null };
+  return { view: ['favorites', 'videos', 'archive', 'deleted'].includes(h) ? h : 'all', album: null, source: null };
 }
 
 function viewTitle() {
@@ -395,7 +397,7 @@ function viewTitle() {
     return album ? `${album.name}${albumSource(album) ? ` · ${albumSource(album)}` : ''}` : 'Album';
   }
   if (state.source) return sourceById(state.source) ? `From ${sourceLabel(sourceById(state.source))}` : 'Source';
-  return { favorites: 'Favorites', videos: 'Videos', archive: 'Archive' }[state.view];
+  return { favorites: 'Favorites', videos: 'Videos', archive: 'Archive', deleted: 'Deleted' }[state.view];
 }
 
 function setView() {
@@ -415,6 +417,17 @@ function setView() {
   $('#new-pill').hidden = true;
   resetTimeline();
   scrollTo(0, 0);
+  // The Deleted list is a list of files, not a timeline.
+  const deleted = view === 'deleted';
+  for (const el of [$('#timeline'), $('#scrubber')]) el.hidden = deleted;
+  $('#deleted-view').hidden = !deleted;
+  if (deleted) {
+    state.hasOlder = false;
+    deletedKey = '';
+    updateChrome();
+    renderDeleted();
+    return;
+  }
   loadMonths();
   loadOlder();
 }
@@ -552,7 +565,7 @@ function renderBackup(backup) {
 function updateChrome() {
   $('#load-newer').hidden = !state.hasNewer;
   const empty = $('#empty');
-  const isEmpty = !state.items.length && !state.hasOlder && !state.loading;
+  const isEmpty = !state.items.length && !state.hasOlder && !state.loading && state.view !== 'deleted';
   empty.hidden = !isEmpty;
   if (!isEmpty) return;
   const show = (art, title, text = '', extra = '') =>
@@ -597,6 +610,10 @@ async function poll() {
     renderSources(s.sources);
     renderStats(s.stats);
     renderBackup(s.backup);
+    state.canDelete = s.deleted !== null;
+    $('#nav-deleted').hidden = !s.deleted?.photos && state.view !== 'deleted';
+    $('#deleted-count').textContent = s.deleted?.photos || '';
+    if (state.view === 'deleted') renderDeleted();
     if (lastVersion !== null && s.version !== lastVersion) libraryChanged();
     if (wasRunning && !state.running && Date.now() - lastReload > 500) libraryChanged(true);
     lastVersion = s.version;
@@ -896,6 +913,7 @@ async function showCurrent() {
   $('#lb-live').hidden = true;
   $('#lb-copy').hidden = item.kind !== 'image' || !canCopy();
   $('#lb-reveal').hidden = !canReveal();
+  $('#lb-delete').hidden = !state.canDelete;
 
   const details = await api(`/api/media/${item.id}`).catch(() => null);
   if (token !== lb.token || !details) return;
@@ -940,6 +958,159 @@ async function copyImage(item = state.items[lb.index]) {
     toast(`Couldn't copy the image: ${err.message}`);
   }
 }
+
+// --- deleting --------------------------------------------------------------------
+
+const askDialog = $('#ask-dialog');
+let answer = null; // answers the question that is open
+
+/** A question with Cancel and a (dangerous) action; resolves with whether the action was chosen. */
+function ask({ title, body, action }) {
+  answer?.(false);
+  $('#ask-title').textContent = title;
+  $('#ask-body').innerHTML = body;
+  $('#ask-ok').textContent = action;
+  askDialog.showModal();
+  $('#ask-ok').focus();
+  return new Promise((resolve) => {
+    answer = (yes) => {
+      answer = null;
+      if (askDialog.open) askDialog.close();
+      resolve(yes);
+    };
+  });
+}
+
+$('#ask-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  answer?.(true);
+});
+$('#ask-cancel').addEventListener('click', () => answer?.(false));
+// Esc, which doesn't always say so with a close event.
+askDialog.addEventListener('cancel', (e) => {
+  e.preventDefault();
+  answer?.(false);
+});
+// A close event can come late, after the next question opened: that one stays.
+askDialog.addEventListener('close', () => !askDialog.open && answer?.(false));
+
+/** Every file of the photo on this computer: the copy in the library folder, its originals, its other versions. */
+const photoFiles = (d) => [...new Set([d.copy, ...d.files.map((f) => f.path), ...d.versions.flatMap((v) => v.files.map((f) => f.path))].filter(Boolean))];
+
+/** Delete the photo from all devices, once the user says so. */
+async function deletePhoto(item = state.items[lb.index]) {
+  if (!item || !state.canDelete || askDialog.open) return;
+  const d = lb.details?.id === item.id ? lb.details : await api(`/api/media/${item.id}`).catch(() => null);
+  if (!d) return;
+  const files = photoFiles(d);
+  const shown = files.slice(0, 4);
+  const yes = await ask({
+    title: 'Delete from all devices?',
+    action: 'Delete',
+    body: `<p><b>${esc(d.filename)}</b>, taken ${esc(fmtFull.format(wallClock(d.local_time)))}.</p>
+      <p>${files.length === 1 ? 'Its file on this computer goes' : `Its ${files.length} files on this computer go`} to the Trash${d.versions.length ? ', its other versions too' : ''}:</p>
+      <ul class="places">${shown.map((f) => `<li>${esc(homePath(f))}</li>`).join('')}${files.length > shown.length ? `<li>and ${files.length - shown.length} more</li>` : ''}</ul>
+      <p>Phones with Photobox for Android delete their copy too, once you confirm it there.</p>
+      <p class="muted small">Its fingerprint stays on the Deleted list, so a copy that turns up again is deleted too.</p>`,
+  });
+  if (!yes) return;
+  try {
+    const { waiting, version } = await api(`/api/media/${item.id}`, { method: 'DELETE' });
+    lastVersion = version; // our own change - the view is updated right here
+    removeItem(item);
+    toast(waiting ? `Deleted · ${waiting === 1 ? 'a file waits for its folder' : `${waiting} files wait for their folders`} (unplugged drive?)` : 'Deleted');
+    poll();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+/** Take a deleted photo out of the timeline, and the viewer on to the next one. */
+function removeItem(item) {
+  const index = state.items.findIndex((i) => i.id === item.id);
+  if (index < 0) return;
+  state.items.splice(index, 1);
+  tiles.get(item.id)?.remove();
+  tiles.delete(item.id);
+  const dayKey = item.local_time.slice(0, 10);
+  const day = days.get(dayKey);
+  if (day) {
+    day.items = day.items.filter((i) => i.id !== item.id);
+    if (day.items.length) layoutDay(day);
+    else {
+      day.el.remove();
+      days.delete(dayKey);
+      const month = months.get(dayKey.slice(0, 7));
+      if (month && !month.days.children.length) {
+        month.el.remove();
+        months.delete(dayKey.slice(0, 7));
+      }
+    }
+  }
+  if (!lightbox.hidden) {
+    if (!state.items.length) closeLightbox();
+    else {
+      lb.index = Math.min(index, state.items.length - 1);
+      showCurrent();
+    }
+  }
+  updateChrome();
+}
+
+$('#lb-delete').addEventListener('click', () => deletePhoto());
+
+const FILE_STATES = { deleted: 'Moved to the Trash', pending: 'Waiting', changed: 'Kept' };
+const DEVICE_STATES = { waiting: 'Waiting for the phone', trashed: 'Deleted on the phone', kept: 'Kept on the phone' };
+
+let deletedKey = '';
+/** The Deleted list: each photo with the fingerprint of each of its files, and what became of every copy. */
+async function renderDeleted() {
+  const list = await api('/api/deletions').catch(() => null);
+  const key = JSON.stringify([list, state.remote]);
+  if (state.view !== 'deleted' || !list || key === deletedKey) return;
+  deletedKey = key;
+  const where = (label, state, text) => `<div class="where"><span class="path">${label}</span><span class="state is-${state}">${esc(text)}</span></div>`;
+  $('#deleted-view').innerHTML = `
+    <div class="deleted-head">
+      <p class="muted">Photos you deleted, with the fingerprint (SHA-256) of each file and what became of every copy. While a photo is on this list, a copy that turns up again (a drive plugged back in, a new Takeout, a phone) is deleted too.</p>
+      ${list.length && !state.remote ? '<button class="btn" data-clear-all>Clear list</button>' : ''}
+    </div>
+    ${list.length ? '' : `<div class="empty"><div class="art">${icon('trash')}</div><h2>Nothing deleted</h2></div>`}
+    ${list.map((p) => `
+      <article class="deleted" data-photo="${esc(p.photo)}">
+        <div class="deleted-title">${icon(p.kind === 'video' ? 'play' : 'image')}
+          <div><b>${esc(p.filename)}</b><span class="muted small">${esc([p.local_time && `Taken ${fmtFull.format(wallClock(p.local_time))}`, `deleted ${ago(p.deleted_at)}`].filter(Boolean).join(' · '))}</span></div>
+          ${state.remote ? '' : `<button class="btn small" data-clear="${esc(p.photo)}">Clear</button>`}
+        </div>
+        ${p.contents.map((c) => `
+          <div class="content">
+            <div class="fingerprint"><span class="muted">${c.sha256 === p.photo ? 'Fingerprint' : `${esc(c.filename)} · fingerprint`}</span> <code title="SHA-256">${esc(c.sha256)}</code></div>
+            ${c.files.map((f) => where(esc(homePath(f.path)), f.state, f.error && f.state !== 'deleted' ? `${FILE_STATES[f.state]}: ${f.error}` : FILE_STATES[f.state])).join('')}
+            ${c.devices.map((d) => where(`${icon('phone')}${esc(d.name)}`, d.state, DEVICE_STATES[d.state])).join('')}
+          </div>`).join('')}
+      </article>`).join('')}`;
+}
+
+$('#deleted-view').addEventListener('click', async (e) => {
+  const one = e.target.closest('[data-clear]')?.dataset.clear;
+  const all = e.target.closest('[data-clear-all]');
+  if (!one && !all) return;
+  const n = all ? document.querySelectorAll('#deleted-view .deleted').length : 1;
+  const yes = await ask({
+    title: all ? `Clear ${n === 1 ? 'the photo' : `all ${n} photos`} from the list?` : 'Clear this photo from the list?',
+    action: 'Clear',
+    body: `<p>Photobox forgets ${n === 1 ? 'it' : 'them'}. A copy that is still somewhere or turns up again is shown again, and phones that kept a copy back it up again.</p>`,
+  });
+  if (!yes) return;
+  try {
+    await api('/api/deletions/clear', { method: 'POST', body: all ? { all: true } : { photos: [one] } });
+    deletedKey = '';
+    await renderDeleted();
+    poll();
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 function showStageMessage(text, item) {
   stage.innerHTML = `<div class="lb-msg"><p>${esc(text)}</p>${canReveal() ? `<button class="btn" data-reveal>${revealLabel()}</button>` : ''}</div>`;
@@ -1060,12 +1231,14 @@ function photoActions(item, inViewer) {
     ...(item.kind === 'image' && canCopy() ? [{ id: 'copy', label: 'Copy Photo', keys: inViewer ? 'CmdOrCtrl+C' : null }] : []),
     ...(canReveal() ? [{ id: 'reveal', label: revealLabel(), keys: null }] : []),
     { id: 'info', label: inViewer && lightbox.classList.contains('info-open') ? 'Hide Info' : 'Get Info', keys: inViewer ? 'I' : null },
+    ...(state.canDelete ? [{ id: 'delete', label: 'Delete…', keys: inViewer ? 'CmdOrCtrl+Backspace' : null, separator: true }] : []),
   ];
 }
 
 function runPhotoAction(id, item, inViewer) {
   if (id === 'copy') copyImage(item);
   else if (id === 'reveal') reveal(item);
+  else if (id === 'delete') deletePhoto(item);
   else if (id === 'info' && inViewer) toggleInfo();
   else if (id === 'info') {
     openLightbox(item.id);
@@ -1075,12 +1248,12 @@ function runPhotoAction(id, item, inViewer) {
 
 const ctxMenu = $('#ctx-menu');
 const isMacKeyboard = /Mac|iPhone|iPad/.test(navigator.platform);
-const shortcut = (keys) => keys.replace('CmdOrCtrl+', isMacKeyboard ? '⌘' : 'Ctrl+');
+const shortcut = (keys) => keys.replace('CmdOrCtrl+', isMacKeyboard ? '⌘' : 'Ctrl+').replace('Backspace', isMacKeyboard ? '⌫' : 'Backspace');
 
 /** The menu outside the desktop app (which shows a native one): resolves with the chosen action's id, or null. */
 function pageMenu(actions, e) {
   return new Promise((resolve) => {
-    ctxMenu.innerHTML = actions.map((a) => `<button role="menuitem" data-action="${a.id}"><span>${esc(a.label)}</span>${a.keys ? `<kbd>${esc(shortcut(a.keys))}</kbd>` : ''}</button>`).join('');
+    ctxMenu.innerHTML = actions.map((a) => `${a.separator ? '<hr>' : ''}<button role="menuitem" data-action="${a.id}"><span>${esc(a.label)}</span>${a.keys ? `<kbd>${esc(shortcut(a.keys))}</kbd>` : ''}</button>`).join('');
     ctxMenu.hidden = false;
     // At the pointer; opened from the keyboard, at the photo. Never off-screen.
     const at = e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : e.target.getBoundingClientRect();
@@ -1129,6 +1302,14 @@ addEventListener('contextmenu', async (e) => {
 });
 
 addEventListener('keydown', (e) => {
+  // A dialog over the viewer (deleting) gets its own keys: Esc closes it, not the photo.
+  if (askDialog.open) return;
+  // ⌫, Delete or ⌘⌫ deletes the photo (after asking).
+  if (!lightbox.hidden && (e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.altKey && state.canDelete) {
+    deletePhoto();
+    e.preventDefault();
+    return;
+  }
   // ⌘C / Ctrl+C copies the photo, unless text is selected (a path in the info panel, say).
   if (!lightbox.hidden && (e.metaKey || e.ctrlKey) && !e.altKey && e.key === 'c' && !getSelection()?.toString()) {
     copyImage();

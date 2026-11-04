@@ -3,6 +3,7 @@ package local.photobox.android
 import android.Manifest
 import android.content.ContentUris
 import android.content.Context
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -59,6 +60,17 @@ class MediaCatalog(private val context: Context) {
 
     fun find(asset: Asset): Asset? = context.contentResolver.query(Uri.parse(asset.uri), projection(), selection(), null, null)?.use {
         if (it.moveToFirst()) fromCursor(it, Uri.parse(asset.uri), asset.mediaKey) else null
+    }
+
+    /**
+     * Android's own confirmation for moving these photos to the phone's trash (Android 11+), for
+     * the ones that are still the version that was deleted: an edit since is a photo of its own.
+     */
+    fun trashRequest(assets: List<Asset>): IntentSender? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val unchanged = assets.filter { find(it)?.signature == it.signature }
+        if (unchanged.isEmpty()) return null
+        return MediaStore.createTrashRequest(context.contentResolver, unchanged.map { Uri.parse(it.uri) }, true).intentSender
     }
 
     fun openOriginal(asset: Asset): InputStream {

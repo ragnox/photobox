@@ -249,9 +249,10 @@ ipcMain.on('reveal', (event, file) => { if (trusted(event) && typeof file === 's
 ipcMain.handle('context-menu', (event, items) => {
   if (!trusted(event) || !Array.isArray(items)) return null;
   return new Promise((resolve) => {
-    const menu = Menu.buildFromTemplate(items.slice(0, 20).filter((i) => typeof i?.id === 'string' && typeof i.label === 'string').map((i) => ({
-      label: i.label, accelerator: typeof i.keys === 'string' ? i.keys : undefined, registerAccelerator: false, click: () => resolve(i.id),
-    })));
+    const menu = Menu.buildFromTemplate(items.slice(0, 20).filter((i) => typeof i?.id === 'string' && typeof i.label === 'string').flatMap((i) => [
+      ...(i.separator === true ? [{ type: 'separator' }] : []),
+      { label: i.label, accelerator: typeof i.keys === 'string' ? i.keys : undefined, registerAccelerator: false, click: () => resolve(i.id) },
+    ]));
     // macOS can report the menu closed before the click on an item arrives: that click still wins.
     menu.popup({ window: win, callback: () => setTimeout(() => resolve(null), 100) });
   });

@@ -45,8 +45,21 @@ and F-Droid packaging are follow-up distribution work.
 
 The host indexes uploads even if no export destination is configured, but they
 remain **awaiting verified export**. Without a completed host export, the app does
-not mark the item export verified. Originals are never deleted or modified by this
-Android client.
+not mark the item export verified. Originals are never modified by this Android client,
+and deleted only as below.
+
+## Photos deleted in Photobox
+
+When you delete a photo in Photobox, the next backup run learns of it from the host
+(`/api/backup/deletions`) and the photo is no longer uploaded. The app shows it under
+**Deleted in Photobox** and posts a notification. **Delete from this phone** opens
+Android's own confirmation, and the photo moves to the phone's trash (Android 11+);
+**Keep** leaves it. Only copies that are still the version that was deleted are
+offered: an edit since is a photo of its own. A photo already gone from the phone
+(deleted in a gallery app) counts as deleted. The app tells the host what it did, which
+shows on the host's Deleted list. If the photo is cleared from that list, a copy that is
+still here is backed up again. Android 10 cannot move other apps' photos to the trash:
+delete them in a gallery app.
 
 **Open host in browser** opens the existing web UI. Browser pairing/cookies are
 separate from the Android backup token; use the browser pairing flow if that

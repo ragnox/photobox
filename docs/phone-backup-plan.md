@@ -9,6 +9,9 @@ This is the executable breakdown of [the Android roadmap](android-plan.md).
 - Preserve original bytes, including GPS, motion-photo payloads, HDR gain maps,
   RAW files and videos. Do not transcode uploads.
 - Phone deletions never delete host files. Changed phone content is a new version.
+- A photo deleted in Photobox is deleted on the phone only after the user confirms it
+  there, through Android's system trash request, and only while the phone's copy is
+  still the version that was deleted. It is never uploaded again.
 - Resumption works after network loss, app termination and host restart.
 - Distinguish **received and verified**, **indexed**, and **export verified**.
   Neither an HTTP success nor a thumbnail means a photo is safely backed up.
@@ -158,3 +161,8 @@ iOS background execution and PhotoKit require their own implementation plan.
   receipt. Android 17 foreground-start denial was found and fixed. The mixed 10 GB,
   format, interruption and execution-limit acceptance matrix is still open.
 - [ ] Milestone 4: explicitly confirmed phone cleanup.
+- [x] Deleting a photo in Photobox deletes it everywhere (2026-11-04): the host's copies go
+  to the Trash, the Deleted list keeps each fingerprint, and the Android app learns of it
+  through `/api/backup/deletions`, asks the user to confirm Android's trash request and
+  reports what it did. See [the native backup API](backup-api.md#photos-deleted-in-photobox).
+  Not yet tried on a real phone.

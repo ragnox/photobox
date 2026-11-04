@@ -99,9 +99,16 @@ data class PairingPayload(
 data class Connection(val id: String, val server: String, val token: String, val trust: TrustAnchor, val deviceName: String)
 
 @Serializable data class Capabilities(val version: Int, val tusVersion: String, val maxFileBytes: Long, val extensions: List<String>)
-@Serializable data class Receipt(val sha256: String, val received: Boolean, val indexed: Boolean, val exported: Boolean) {
-    val verified: Boolean get() = received && indexed && exported
+/** `deleted`: the photo was deleted in Photobox, so this phone deletes its copy instead of backing it up. */
+@Serializable data class Receipt(val sha256: String, val received: Boolean, val indexed: Boolean, val exported: Boolean, val deleted: Boolean = false) {
+    val verified: Boolean get() = received && indexed && exported && !deleted
 }
+/** One change on the host's Deleted list; `deleted: false` means it was cleared there, so the copy stays. */
+@Serializable data class Deletion(val seq: Long, val sha256: String, val deleted: Boolean)
+@Serializable data class Deletions(val deletions: List<Deletion>, val more: Boolean)
+/** What this phone did with its copy of a deleted photo: `trashed` or `kept`. */
+@Serializable data class DeletionOutcome(val sha256: String, val state: String)
+@Serializable internal data class DeletionReport(val items: List<DeletionOutcome>)
 @Serializable internal data class Receipts(val assets: List<Receipt>)
 @Serializable internal data class PairRequest(val code: String, val name: String)
 @Serializable internal data class PairResponse(val token: String)

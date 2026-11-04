@@ -416,6 +416,7 @@ async function runExport(library, dest, { dryRun = false, onProgress = () => {},
       const job = planned[next++];
       try {
         await validateDestination();
+        if (library.isDeleted(job.sha256)) throw new Error('deleted');
         await copyInto(job.source, dest, job.rel, job.takenAt, job.sha256);
         const item = { mediaId: job.mediaId, sha256: job.sha256, rel: job.rel };
         result.verified.push(item);
@@ -457,6 +458,8 @@ async function runExport(library, dest, { dryRun = false, onProgress = () => {},
       result.skipped.push({ name: path.basename(rel), reason: `older version not moved aside: ${err.message}` });
     }
   }
+  // Deleted while this export ran: the copy here goes too, once this export lets go of the folder (see deletions.js).
+  for (const [rel, entry] of Object.entries(items)) library.deletedCopy(entry.sha256, full(dest, rel), dest, dest);
   await writeManifest(dest, items, superseded);
   return result;
 }

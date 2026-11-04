@@ -52,6 +52,7 @@ class HostApi private constructor(private val base: HttpUrl, private val client:
         if (code !in codes) {
             val message = when (code) {
                 401 -> "Host disconnected this phone; pair again"
+                410 -> "Deleted in Photobox"
                 413 -> "Host file-size limit or device quota exceeded"
                 422 -> "Host rejected the file's SHA-256; retry the original"
                 507 -> "Host does not have enough free space"
@@ -77,6 +78,21 @@ class HostApi private constructor(private val base: HttpUrl, private val client:
         return protocolJson.decodeFromString<Receipts>(reply.body).assets.also {
             require(it.map(Receipt::sha256) == hashes) { "Host returned mismatched backup receipts" }
         }
+    }
+
+    /** Changes on the host's Deleted list after `after` (the last `seq` seen), oldest first. */
+    suspend fun deletions(after: Long): Deletions {
+        require(after >= 0)
+        val reply = send(request("/api/backup/deletions?after=$after").get().build()).expect(200)
+        return protocolJson.decodeFromString<Deletions>(reply.body).also { page ->
+            require(page.deletions.all { it.seq > after && it.sha256.matches(Regex("[a-f0-9]{64}")) }) { "Host returned invalid deletions" }
+        }
+    }
+
+    suspend fun reportDeletions(items: List<DeletionOutcome>) {
+        require(items.size <= 500 && items.all { it.sha256.matches(Regex("[a-f0-9]{64}")) && it.state in setOf("trashed", "kept") })
+        val body = protocolJson.encodeToString(DeletionReport(items)).toRequestBody(JSON)
+        send(request("/api/backup/deletions/report").post(body).build()).expect(200)
     }
 
     /** Resumed locations are validated before a bearer token is ever attached. */

@@ -7,10 +7,11 @@ import { startPhotobox } from '../src/app.js';
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-kotlin-host-'));
 const backupDir = path.join(tmp, 'photos');
 await fs.mkdir(backupDir);
-const app = await startPhotobox({ dataDir: path.join(tmp, 'data'), backupDir, port: 0, remotePort: 0, listen: '127.0.0.1' });
+// Deleted files go nowhere near your Trash: they are temporary, synthetic ones.
+const app = await startPhotobox({ dataDir: path.join(tmp, 'data'), backupDir, port: 0, remotePort: 0, listen: '127.0.0.1', trash: (file) => fs.rm(file) });
 const response = await fetch(`${app.url}/api/pairing`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
 const pairing = await response.json();
-process.stdout.write(`${pairing.links[0].native.payload}\n`);
+process.stdout.write(`${pairing.links[0].native.payload}\n${app.url}\n`);
 let closing = false;
 async function close() {
   if (closing) return;

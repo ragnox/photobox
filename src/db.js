@@ -119,6 +119,45 @@ CREATE TABLE IF NOT EXISTS backup_exports (
   ctime_ns TEXT NOT NULL
 );
 
+-- Content the user deleted, by full SHA-256, until it is cleared from the Deleted list: a copy that
+-- turns up again is deleted too. A cleared row stays (cleared_at), so phones learn of it through seq.
+CREATE TABLE IF NOT EXISTS deletions (
+  sha256 TEXT PRIMARY KEY,
+  photo TEXT NOT NULL,                -- SHA-256 of the photo the user deleted; its versions and live clip go with it
+  filename TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  local_time TEXT,
+  bytes INTEGER,
+  deleted_at INTEGER NOT NULL,
+  cleared_at INTEGER,
+  seq INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deletions_seq ON deletions(seq);
+CREATE INDEX IF NOT EXISTS deletions_photo ON deletions(photo);
+
+-- Every copy of deleted content on this computer. A pending one is deleted once its folder is there.
+CREATE TABLE IF NOT EXISTS deleted_files (
+  id INTEGER PRIMARY KEY,
+  sha256 TEXT NOT NULL REFERENCES deletions(sha256) ON DELETE CASCADE,
+  path TEXT NOT NULL UNIQUE,
+  root TEXT NOT NULL,                 -- the folder that has to be available: a source, an export, the inbox
+  manifest TEXT,                      -- the folder whose photobox-export.json lists it
+  state TEXT NOT NULL CHECK(state IN ('pending', 'deleted', 'changed')),
+  error TEXT,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deleted_files_sha256 ON deleted_files(sha256);
+
+-- What each phone did with its copy of deleted content, as it reported.
+CREATE TABLE IF NOT EXISTS deleted_on_devices (
+  sha256 TEXT NOT NULL REFERENCES deletions(sha256) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL,
+  device_name TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('trashed', 'kept')),
+  at INTEGER NOT NULL,
+  PRIMARY KEY (sha256, device_id)
+);
+
 -- Exported files whose SHA-256 an export checked, and the file's stamps then: unchanged, it isn't read again for a while.
 CREATE TABLE IF NOT EXISTS export_checks (
   path TEXT PRIMARY KEY,
@@ -403,6 +442,27 @@ export class Library {
   /** Checks older than `before` (epoch ms) are read again anyway, so they go. */
   forgetExportChecks(before) {
     this.q('DELETE FROM export_checks WHERE checked_at < ?').run(before);
+  }
+
+  // --- deleted content (see deletions.js) ------------------------------------
+
+  /** Content on the Deleted list (not cleared), by full SHA-256. */
+  isDeleted(sha256) {
+    return Boolean(sha256 && this.q('SELECT 1 FROM deletions WHERE sha256 = ? AND cleared_at IS NULL').get(sha256));
+  }
+
+  /**
+   * A copy of deleted content was found at `file`, in the folder `root`: it is deleted too. A file
+   * that was deleted before and is back (put back from the Trash, say) is deleted again.
+   */
+  deletedCopy(sha256, file, root, manifest = null) {
+    if (!this.isDeleted(sha256)) return false;
+    // Found where it waited for its folder: that folder is back, so it's tried again now.
+    this.q(`INSERT INTO deleted_files (sha256, path, root, manifest, state, at) VALUES (?, ?, ?, ?, 'pending', ?)
+      ON CONFLICT (path) DO UPDATE SET sha256 = excluded.sha256, root = excluded.root, manifest = coalesce(excluded.manifest, manifest),
+        state = 'pending', error = NULL, at = excluded.at`)
+      .run(sha256, file, root, manifest, Date.now());
+    return true;
   }
 
   /** Has the item a file outside the archive: an original, not a copy an export made? */

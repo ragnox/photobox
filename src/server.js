@@ -40,13 +40,13 @@ function parseCursor(value) {
 
 /**
  * The app for one listener. The local one (127.0.0.1) answers only to localhost
- * and can do everything. The network one (`remote`) lets paired devices browse
- * and favorite, plus back up originals through the native API; managing the library,
- * pairing and devices stays on this computer.
+ * and can do everything. The network one (`remote`) lets paired devices browse,
+ * favorite and delete photos, plus back up originals through the native API; managing
+ * the library, the Deleted list, pairing and devices stays on this computer.
  */
 const showInFinder = (file) => run('open', ['-R', file]);
 
-export function createApp({ library, indexer, watcher, config, network = null, uploads = null, backup = null, hostControl = null, reveal = showInFinder }, { remote = false } = {}) {
+export function createApp({ library, indexer, watcher, config, network = null, uploads = null, backup = null, deletions = null, hostControl = null, reveal = showInFinder }, { remote = false } = {}) {
   const app = express();
   app.disable('x-powered-by');
 
@@ -91,6 +91,18 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     if (!remote || !uploads) return res.status(403).json({ error: 'Backup capabilities require the paired HTTPS listener' });
     uploads.authenticate(req.headers.authorization);
     res.json({ version: 1, tusVersion: '1.0.0', maxFileBytes: config.uploadMaxBytes, extensions: [...MEDIA_EXT].sort() });
+  });
+
+  // What a phone needs to delete its copies of photos deleted in Photobox, and to say what it did.
+  app.get('/api/backup/deletions', (req, res) => {
+    if (!remote || !uploads || !deletions) return res.status(403).json({ error: 'Deletions require the paired HTTPS listener' });
+    uploads.authenticate(req.headers.authorization);
+    res.json(deletions.feed(req.query.after));
+  });
+
+  app.post('/api/backup/deletions/report', (req, res) => {
+    if (!remote || !uploads || !deletions) return res.status(403).json({ error: 'Deletions require the paired HTTPS listener' });
+    res.json(deletions.reported(uploads.authenticate(req.headers.authorization).device, req.body?.items));
   });
 
   const hostOnly = (req, res, next) => {
@@ -143,6 +155,7 @@ export function createApp({ library, indexer, watcher, config, network = null, u
       remote, device: req.device?.name ?? null, network: !remote && network ? network.info() : null,
       backup: !remote && backup ? { ...backup.status, destination: config.backupDir } : null,
       uploads: !remote && uploads ? uploads.progress() : null,
+      deleted: deletions?.counts() ?? null,
     });
   });
 
@@ -210,6 +223,24 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     indexer.changed();
     backup?.request(true);
     res.json({ favorite: Boolean(req.body?.favorite), version: indexer.version });
+  });
+
+  // Delete the photo from all devices: its files here go to the Trash, phones delete theirs (see deletions.js).
+  app.delete('/api/media/:id', async (req, res) => {
+    if (!deletions) return res.status(503).json({ error: 'Deleting is unavailable' });
+    const result = await deletions.delete(Number(req.params.id));
+    if (!result) return res.status(404).json({ error: 'Not found' });
+    res.json({ ...result, version: indexer.version });
+  });
+
+  app.get('/api/deletions', (req, res) => res.json(deletions?.list() ?? []));
+
+  // Clear photos from the Deleted list (all of them without `photos`): Photobox forgets them.
+  app.post('/api/deletions/clear', hostOnly, (req, res) => {
+    if (!deletions) return res.status(503).json({ error: 'Deleting is unavailable' });
+    const cleared = deletions.clear(req.body?.all === true ? null : req.body?.photos);
+    indexer.changed();
+    res.json({ cleared, version: indexer.version });
   });
 
   // Show one of the photo's files in Finder: the one asked for, else the copy in the library folder, else an original.

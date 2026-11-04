@@ -13,6 +13,7 @@ import { Library } from '../../src/db.js';
 import { Indexer } from '../../src/indexer.js';
 import { exportLibrary } from '../../src/export.js';
 import { createApp } from '../../src/server.js';
+import { Deletions } from '../../src/deletions.js';
 import { openPage } from './page.js';
 
 const [W, H] = [480, 360];
@@ -83,13 +84,20 @@ before(async () => {
   assert.ok(best, 'the indexer found the version');
 
   const revealed = [];
+  // A stand-in for the Trash, so deleting never touches yours.
+  const trashed = [];
+  const deletions = new Deletions(library, indexer, config, { trash: async (file) => {
+    await fs.mkdir(path.join(tmp, 'Trash'), { recursive: true });
+    await fs.rename(file, path.join(tmp, 'Trash', `${trashed.length}-${path.basename(file)}`));
+    trashed.push(file);
+  } });
   const watcher = { watchSource() {}, async unwatch() {} };
-  const server = http.createServer(createApp({ library, indexer, watcher, config, reveal: async (file) => revealed.push(file) }));
+  const server = http.createServer(createApp({ library, indexer, watcher, config, deletions, reveal: async (file) => revealed.push(file) }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const screenshots = process.env.PHOTOBOX_UI_SCREENSHOTS ? path.resolve(process.env.PHOTOBOX_UI_SCREENSHOTS) : null;
   if (screenshots) await fs.mkdir(screenshots, { recursive: true });
   const page = await openPage({ profile: path.join(tmp, 'electron'), screenshots });
-  Object.assign(ctx, { tmp, config, library, server, page, a, b, best, older: best.versions[0], img2: byName('IMG_2.jpg'), img3: byName('IMG_3.jpg'), revealed });
+  Object.assign(ctx, { tmp, config, library, server, page, a, b, best, older: best.versions[0], img2: byName('IMG_2.jpg'), img3: byName('IMG_3.jpg'), revealed, deletions, trashed });
 
   await page.load(`http://localhost:${server.address().port}/`);
   // A stand-in clipboard that records what would be copied, so the test never touches yours.
@@ -118,6 +126,7 @@ after(async () => {
   await ctx.page?.close();
   ctx.server?.closeAllConnections();
   ctx.server?.close();
+  await ctx.deletions?.close();
   ctx.library?.close();
   if (ctx.tmp) await fs.rm(ctx.tmp, { recursive: true, force: true });
 });
@@ -217,7 +226,7 @@ test('right-clicking a photo offers to copy it, show it in Finder or show its in
   const copies = await page.evaluate(() => window.copied.length);
   await page.rightClick(`.tile[data-id="${best.id}"]`);
   await open();
-  assert.deepEqual(await menu(), ['Copy Photo', ...finder, 'Get Info']);
+  assert.deepEqual(await menu(), ['Copy Photo', ...finder, 'Get Info', 'Delete…']);
   await page.click('#ctx-menu [data-action="copy"]');
   await page.waitFor((n) => window.copied.length === n + 1 && document.querySelector('#ctx-menu').hidden, copies, 'the copy');
 
@@ -228,7 +237,7 @@ test('right-clicking a photo offers to copy it, show it in Finder or show its in
   // In the viewer it shows the shortcuts, and Esc closes the menu, not the photo.
   await page.rightClick('#lb-stage img');
   await open();
-  assert.deepEqual(await menu(), [`Copy Photo${process.platform === 'darwin' ? '⌘C' : 'Ctrl+C'}`, ...finder, 'Hide InfoI']);
+  assert.deepEqual(await menu(), [`Copy Photo${process.platform === 'darwin' ? '⌘C' : 'Ctrl+C'}`, ...finder, 'Hide InfoI', `Delete…${process.platform === 'darwin' ? '⌘⌫' : 'Ctrl+Backspace'}`]);
   await page.key('Escape');
   await page.waitFor(() => document.querySelector('#ctx-menu').hidden && !document.querySelector('#lightbox').hidden, null, 'only the menu closed');
   if (finder.length) {
@@ -252,6 +261,7 @@ test('in the desktop app the menu is a native one, and what was picked in it is 
       { id: 'copy', label: 'Copy Photo', keys: null },
       { id: 'reveal', label: finderLabel, keys: null },
       { id: 'info', label: 'Get Info', keys: null },
+      { id: 'delete', label: 'Delete…', keys: null, separator: true },
     ]]);
     assert.deepEqual(page.desktop.revealed, [path.join(config.backupDir, '2024/03/PXL_1.jpg')]);
 
@@ -284,6 +294,42 @@ test('"Not the same photo" shows both photos again', async () => {
   await page.waitFor(() => document.querySelectorAll('.tile').length === 4);
   assert.deepEqual(await tiles(), sorted([best.id, older.id, img2.id, img3.id]));
   await page.waitFor(() => document.querySelector('#stats').textContent === '4 photos · 0 videos');
+});
+
+test('deleting a photo asks first, takes it out of the timeline and lists its fingerprint under Deleted', async () => {
+  const { page, config, img3, trashed } = ctx;
+  await openPhoto(img3.id);
+  await page.click('#lb-delete');
+  await page.waitFor(() => document.querySelector('#ask-dialog').open, null, 'the question');
+  assert.match(await page.text('#ask-body'), /IMG_3\.jpg, taken .* Its 2 files on this computer go to the Trash/);
+  await page.key('Escape');
+  await page.waitFor(() => !document.querySelector('#ask-dialog').open, null, 'the question gone');
+  assert.ok(await page.evaluate(() => !document.querySelector('#lightbox').hidden), 'Esc closed the question, not the photo');
+  assert.deepEqual(trashed, []);
+
+  // ⌫ asks too; deleting moves the viewer on to another photo.
+  await page.key('Backspace');
+  await page.waitFor(() => document.querySelector('#ask-dialog').open, null, 'the question');
+  await page.click('#ask-ok');
+  await page.waitFor((id) => !document.querySelector(`.tile[data-id="${id}"]`) && document.querySelector('#toast').textContent === 'Deleted', img3.id, 'the photo gone');
+  assert.ok(await page.evaluate(() => !document.querySelector('#lightbox').hidden && document.querySelector('#lb-name').textContent !== 'IMG_3.jpg'));
+  assert.deepEqual([...trashed].sort(), [img3.files[0].path, path.join(config.backupDir, '2024/03/IMG_3.jpg')].sort());
+
+  await page.key('Escape');
+  await page.waitFor(() => !document.querySelector('#nav-deleted').hidden, null, 'Deleted in the sidebar');
+  assert.equal(await page.text('#deleted-count'), '1');
+  await page.click('#nav-deleted');
+  await page.waitFor(() => document.querySelector('#deleted-view .deleted'), null, 'the Deleted list');
+  const entry = await page.text('#deleted-view .deleted');
+  assert.match(entry, new RegExp(`^IMG_3\\.jpg\\s*Taken .* · deleted .* Clear Fingerprint ${img3.sha256}`));
+  assert.equal((entry.match(/Moved to the Trash/g) ?? []).length, 2);
+  assert.ok(await page.evaluate(() => document.querySelector('#timeline').hidden && document.querySelector('#empty').hidden));
+
+  await page.click('#deleted-view [data-clear]');
+  await page.waitFor(() => document.querySelector('#ask-dialog').open, null, 'the question');
+  await page.click('#ask-ok');
+  await page.waitFor(() => document.querySelector('#deleted-view').textContent.includes('Nothing deleted') && document.querySelector('#deleted-count').textContent === '', null, 'an empty list');
+  assert.deepEqual(ctx.deletions.list(), []);
 });
 
 test('nothing went wrong in the page', () => {

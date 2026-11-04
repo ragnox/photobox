@@ -77,4 +77,8 @@ class SettingsStore(context: Context) {
             .putLong("success", next.lastSuccess).putString("error", next.error).apply()
         mutable.value = next
     }
+
+    /** The last change on the paired host's Deleted list this phone has seen, per pairing. */
+    fun deletionsSeen(connection: String): Long = prefs.getLong("deletions:$connection", 0)
+    fun sawDeletions(connection: String, seq: Long) { check(prefs.edit().putLong("deletions:$connection", seq).commit()) }
 }

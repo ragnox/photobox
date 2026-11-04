@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,6 +28,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,6 +47,9 @@ private fun BackupScreen(model: MainViewModel = viewModel()) {
     val access by model.access.collectAsStateWithLifecycle()
     val pairing by model.pairing.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
+    val deletionRequests by model.deletionRequests.collectAsStateWithLifecycle()
+    var asked by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    val scope = rememberCoroutineScope()
     var payload by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(Build.MODEL) }
     var pairAnother by remember { mutableStateOf(false) }
@@ -52,6 +57,8 @@ private fun BackupScreen(model: MainViewModel = viewModel()) {
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { model.accessChanged() }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val scan = rememberLauncherForActivityResult(ScanContract()) { result -> result.contents?.let { payload = it } }
+    // Android's own question before photos the camera made go to the trash; the answer is read back from MediaStore.
+    val trash = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { model.trashAnswered(asked) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { model.accessChanged() }
     LaunchedEffect(connection?.id) { if (connection != null) { payload = ""; pairAnother = false } }
 
@@ -61,6 +68,25 @@ private fun BackupScreen(model: MainViewModel = viewModel()) {
                 Spacer(Modifier.height(12.dp))
                 Text("Photobox", style = MaterialTheme.typography.headlineLarge)
                 Text("Original photos, on a disk you own.")
+            }
+            if (deletionRequests.isNotEmpty()) item {
+                val n = deletionRequests.size
+                Text("Deleted in Photobox", style = MaterialTheme.typography.titleLarge)
+                Text(if (n == 1) "You deleted ${deletionRequests[0].filename} in Photobox. It is still on this phone."
+                    else "You deleted $n photos in Photobox. They are still on this phone.")
+                if (Build.VERSION.SDK_INT >= 30) {
+                    Text("Android asks you to confirm before they move to this phone's trash.", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { scope.launch {
+                            model.trashRequest()?.let { (sender, assets) -> asked = assets; trash.launch(IntentSenderRequest.Builder(sender).build()) }
+                        } }) { Text("Delete from this phone") }
+                        OutlinedButton(onClick = { model.keep(deletionRequests) }) { Text("Keep") }
+                    }
+                } else {
+                    Text("Android 10 doesn't let other apps delete photos: delete them in your gallery app, or keep them.", style = MaterialTheme.typography.bodySmall)
+                    deletionRequests.take(20).forEach { Text(it.filename, style = MaterialTheme.typography.bodySmall) }
+                    OutlinedButton(onClick = { model.keep(deletionRequests) }) { Text("Keep") }
+                }
             }
             item {
                 connection?.let { host ->
@@ -121,7 +147,7 @@ private fun BackupScreen(model: MainViewModel = viewModel()) {
                 Text("${counts.sumOf { it.count }} tracked originals · ${counts.find { it.state == AssetState.VERIFIED }?.count ?: 0} export verified")
                 if (settings.lastRun > 0) Text("Last run: ${date(settings.lastRun)}", style = MaterialTheme.typography.bodySmall)
                 if (settings.lastSuccess > 0) Text("Last completed run: ${date(settings.lastSuccess)}", style = MaterialTheme.typography.bodySmall)
-                Text("Originals stay on this phone. No automatic deletion.", style = MaterialTheme.typography.bodySmall)
+                Text("Photobox deletes nothing here by itself: a photo you delete in Photobox goes to this phone's trash once you confirm it.", style = MaterialTheme.typography.bodySmall)
                 connection?.let { host ->
                     TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(host.server))) }) { Text("Open host in browser") }
                     Text("Browser pairing is separate from Android backup.", style = MaterialTheme.typography.bodySmall)
@@ -138,6 +164,9 @@ private fun BackupScreen(model: MainViewModel = viewModel()) {
                         AssetState.ERROR -> "Will retry"
                         AssetState.BLOCKED -> "Needs attention"
                         AssetState.UNAVAILABLE -> "Original unavailable or changing"
+                        AssetState.DELETE_REQUESTED -> "Deleted in Photobox · waiting for you to delete it here"
+                        AssetState.TRASHED -> "Deleted in Photobox and on this phone"
+                        AssetState.KEPT -> "Deleted in Photobox · kept on this phone"
                         else -> "Waiting for backup"
                     }, style = MaterialTheme.typography.bodySmall)
                     asset.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }

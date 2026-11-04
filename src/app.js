@@ -12,6 +12,7 @@ import { createApp } from './server.js';
 import { networkAccess } from './remote.js';
 import { Uploads } from './uploads.js';
 import { BackupQueue } from './backup.js';
+import { Deletions } from './deletions.js';
 import { saveHostSettings } from './host-settings.js';
 
 export class AlreadyRunning extends Error {
@@ -73,7 +74,7 @@ export async function scanAll(library, indexer, onScanned = () => {}) {
  * it, so this throws AlreadyRunning (with the other instance's URL) instead.
  * With `listen`, phones can pair and connect over the network too.
  */
-export async function startPhotobox({ dataDir, archive, port, folders = [], onScanned, listen: address, remotePort, tlsCert, tlsKey, backupDir, managedBy = 'cli' } = {}) {
+export async function startPhotobox({ dataDir, archive, port, folders = [], onScanned, listen: address, remotePort, tlsCert, tlsKey, backupDir, managedBy = 'cli', trash } = {}) {
   const config = loadConfig({ dataDir, archive, port, backupDir, listen: address, remotePort, tlsCert, tlsKey });
   address = config.listen;
   remotePort = config.remotePort;
@@ -87,6 +88,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
   const network = address ? networkAccess(config, library, { address, tlsCert, tlsKey }) : null;
   const uploads = new Uploads(library, config);
   const backup = new BackupQueue(library, indexer, uploads, config);
+  const deletions = new Deletions(library, indexer, config, { uploads, trash });
   const hostControl = {
     info: () => ({ pid: process.pid, dataDir: config.dataDir, archive: config.archive?.root ?? null, managedBy, port: config.port,
       listen: address, remotePort: network?.port ?? null, backupDir: config.backupDir }),
@@ -105,7 +107,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
     },
     async shutdown() { await close(); },
   };
-  const deps = { library, indexer, watcher, config, network, uploads, backup, hostControl };
+  const deps = { library, indexer, watcher, config, network, uploads, backup, deletions, hostControl };
   const servers = [];
   try {
     servers.push(await listen(http.createServer(createApp(deps)), config.port, config.host));
@@ -119,6 +121,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
       tlsCert: tlsCert ? path.resolve(tlsCert) : null, tlsKey: tlsKey ? path.resolve(tlsKey) : null });
   } catch (err) {
     for (const s of servers) s.close();
+    await deletions.close();
     await backup.close();
     await uploads?.close();
     library.close();
@@ -130,6 +133,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
   watcher.start();
   scanAll(library, indexer, onScanned).catch((err) => console.error(err));
   backup.request();
+  deletions.request();
 
   let closed = false;
   async function close() {
@@ -140,6 +144,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
       s.close();
     }
     await watcher.close();
+    await deletions.close();
     await backup.close();
     await uploads.close();
     await indexer.queue;

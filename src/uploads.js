@@ -196,6 +196,8 @@ export class Uploads {
       throw fail(400, 'A plain media filename is required');
     }
     if (typeof sha256 !== 'string' || !SHA256.test(sha256)) throw fail(400, 'A lowercase full SHA-256 is required');
+    // On the Deleted list (see deletions.js): the phone deletes its copy instead.
+    if (this.library.isDeleted(sha256)) throw fail(410, 'This photo was deleted in Photobox');
     if (Object.keys(upload.metadata).some((key) => !['filename', 'sha256', 'capturedAt', 'mediaStoreId'].includes(key))) {
       throw fail(400, 'Unknown upload metadata');
     }
@@ -302,6 +304,10 @@ export class Uploads {
     return this.locked(`check:${owner}`, async () => {
       const assets = [];
       for (const sha256 of hashes) {
+        if (this.library.isDeleted(sha256)) {
+          assets.push({ sha256, received: false, indexed: false, exported: false, deleted: true });
+          continue;
+        }
         let received = false;
         let state = { indexed: false, exported: false };
         const rows = this.library.q("SELECT * FROM backup_uploads WHERE owner_hash = ? AND sha256 = ? AND state IN ('uploading', 'received')").all(owner, sha256);
@@ -322,7 +328,7 @@ export class Uploads {
           });
           if (received) break;
         }
-        assets.push({ sha256, received, ...state });
+        assets.push({ sha256, received, ...state, deleted: false });
       }
       this.authenticate(authorization);
       return { assets };

@@ -7,6 +7,8 @@ import javax.net.ssl.SSLException
 import kotlin.test.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.encodeToString
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -131,7 +133,8 @@ class HostApiTest {
         val process = ProcessBuilder("node", File(root, "scripts/android-test-host.js").absolutePath)
             .directory(root).redirectError(ProcessBuilder.Redirect.INHERIT).start()
         try {
-            val line = withContext(Dispatchers.IO) { process.inputStream.bufferedReader().readLine() }
+            val output = process.inputStream.bufferedReader()
+            val line = withContext(Dispatchers.IO) { output.readLine() }
             assertNotNull(line, "Node host did not start")
             val payload = PairingPayload.decode(line)
             val connection = HostApi.pair(payload, "Kotlin integration test")
@@ -151,6 +154,28 @@ class HostApiTest {
             }
             resumed.cancelPartial(location)
             assertTrue(resumed.check(listOf(hash)).single().verified, "Host termination cannot delete a received original")
+            assertEquals(emptyList(), resumed.deletions(0).deletions)
+
+            // Deleted on the computer: the phone learns of it, may not upload it again, and says what it did.
+            val local = withContext(Dispatchers.IO) { output.readLine() }
+            val plain = okhttp3.OkHttpClient()
+            val json = "application/json".toMediaType()
+            val id = withContext(Dispatchers.IO) {
+                plain.newCall(okhttp3.Request.Builder().url("$local/api/timeline").build()).execute().use { Regex("\"id\":(\\d+)").find(it.body!!.string())!!.groupValues[1] }
+            }
+            withContext(Dispatchers.IO) {
+                plain.newCall(okhttp3.Request.Builder().url("$local/api/media/$id").delete("{}".toRequestBody(json)).build()).execute().use { assertEquals(200, it.code) }
+            }
+            val change = resumed.deletions(0).deletions.single()
+            assertEquals(hash, change.sha256)
+            assertTrue(change.deleted)
+            assertEquals(emptyList(), resumed.deletions(change.seq).deletions)
+            val receipt = resumed.check(listOf(hash)).single()
+            assertTrue(receipt.deleted)
+            assertFalse(receipt.verified)
+            assertEquals(410, assertFailsWith<HostException> { resumed.create("original.png", bytes.size.toLong(), hash, null, "images/1") }.status)
+            resumed.reportDeletions(listOf(DeletionOutcome(hash, "trashed")))
+            assertFailsWith<IllegalArgumentException> { resumed.reportDeletions(listOf(DeletionOutcome(hash, "lost"))) }
         } finally {
             process.destroy()
             withContext(Dispatchers.IO) { if (!process.waitFor(10, TimeUnit.SECONDS)) process.destroyForcibly() }

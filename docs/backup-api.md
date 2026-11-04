@@ -71,6 +71,8 @@ Metadata values use the standard tus base64 encoding of UTF-8 strings:
 
 Unknown keys are rejected. The server generates a random ID; callers cannot choose
 the storage path. Response: `201`, with a relative `Location: /api/uploads/<id>`.
+Content on the host's Deleted list is refused with `410`: the phone deletes its copy
+instead (see [Photos deleted in Photobox](#photos-deleted-in-photobox)).
 
 ### Resume and append
 
@@ -119,7 +121,7 @@ At most 100 hashes per request. The response preserves request order:
 ```json
 {
   "assets": [
-    { "sha256": "<hash>", "received": true, "indexed": true, "exported": true }
+    { "sha256": "<hash>", "received": true, "indexed": true, "exported": true, "deleted": false }
   ]
 }
 ```
@@ -131,12 +133,49 @@ and its full digest matched. Missing, modified and rejected originals return fal
 marker, and a fresh full-hash/size check of a regular destination file. Symlinks,
 corrupt files, missing files and unavailable/replaced destinations fail closed.
 All three fields are false when reception cannot be confirmed. Checking another
-device's hash reveals no receipt for that device.
+device's hash reveals no receipt for that device. `deleted: true` means the content is
+on the host's Deleted list; the other three fields are then false.
 
 Checks are point-in-time evidence, not a promise against future disk failure.
 Reception alone is insufficient for phone cleanup. The future Android cleanup flow
 must recheck host proof and the phone's current content/version before system-confirmed
 deletion; these endpoints themselves delete no phone originals.
+
+## Photos deleted in Photobox
+
+Deleting a photo on the host (`DELETE /api/media/<id>`, from the computer or a paired
+browser) moves every copy on the computer to the Trash and puts the content's full
+SHA-256 on the Deleted list. Phones learn of it with their bearer token:
+
+```http
+GET /api/backup/deletions?after=<seq>
+Authorization: Bearer <token>
+```
+
+```json
+{ "deletions": [{ "seq": 7, "sha256": "<hash>", "deleted": true }], "more": false }
+```
+
+Changes come oldest first, at most 500 at a time; ask again with the last `seq` while
+`more` is true, and keep the last `seq` for the next time. A fingerprint appears once,
+with its latest state: `deleted: true` asks the phone to delete its copies with that
+content (only after the user confirms it, through Android's own trash request), and
+`deleted: false` means it was cleared from the list, so a copy that is still there is
+backed up again. A version-1 host answers `404`: it has no deletions.
+
+What the phone did is reported back and shown on the host's Deleted list:
+
+```http
+POST /api/backup/deletions/report
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"items":[{"sha256":"<hash>","state":"trashed"}]}
+```
+
+`state` is `trashed` (in the phone's trash, or gone another way) or `kept` (the user
+chose to keep it). At most 500 items; reports for content not on the list are ignored.
+Deleting through the host never deletes anything on a phone by itself.
 
 ## Automatic indexing and export
 

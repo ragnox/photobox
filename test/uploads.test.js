@@ -135,7 +135,7 @@ test('resume across a host restart, preserve every byte and issue reception-only
   assert.equal(head.headers['upload-offset'], '100000');
   assert.equal((await patch(s, token, url, 100_000, bytes.subarray(100_000))).status, 204);
   const receipt = await check(s, token, [hash(bytes)]);
-  assert.deepEqual(receipt.json.assets, [{ sha256: hash(bytes), received: true, indexed: false, exported: false }]);
+  assert.deepEqual(receipt.json.assets, [{ sha256: hash(bytes), received: true, indexed: false, exported: false, deleted: false }]);
   const row = s.uploads.row(url.split('/').pop());
   const target = s.uploads.destination(row);
   assert.ok(target.endsWith(`/2025/02/${row.id}/Café.MP.jpg`));

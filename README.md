@@ -2,8 +2,8 @@
 
 Your Google Photos library, on your own disk. Point Photobox at an extracted
 Google Takeout (or any folder of photos) and you get a fast timeline with
-albums, favorites, live photos and videos. It reads your files and never changes them,
-and it keeps watching the folders for new photos.
+albums, favorites, live photos and videos. It reads your files and changes them only when
+you delete a photo, and it keeps watching the folders for new photos.
 
 ## Run it
 
@@ -64,6 +64,30 @@ It also handles these:
 - **HEIC and RAW.** On macOS these are decoded with `sips`. Videos get thumbnails and metadata from `ffmpeg`/`ffprobe`.
 - **Watching.** New, changed and deleted files in any source folder show up in the open app within a few seconds.
 
+## Deleting a photo
+
+Press **⌫** in the viewer, click its trash button, or right-click a photo and choose **Delete…**. Photobox
+asks first, then deletes the photo from all your devices:
+
+- **On this computer** every copy goes to the Trash: its files in your source folders (a Takeout too),
+  the archive's file, the phone backup's original, the copy in the export folder, and its other versions
+  and live photo clip. Finder's **Put Back** still works.
+- **On every device** it is gone from the timeline and albums at once. A paired phone's browser can
+  delete too.
+- **On phones with Photobox for Android** the app asks you to confirm, and then Android moves the
+  phone's copy to its trash. Android doesn't let an app delete photos the camera made without asking.
+  A phone never uploads a deleted photo again.
+
+The sidebar's **Deleted** list has every deleted file's fingerprint (its SHA-256), where it was and what
+became of it: moved to the Trash, waiting for a drive that is unplugged, or deleted or kept on a phone.
+While a photo is on the list, a copy that turns up again (that drive plugged back in, a new Takeout, the
+same file put back from the Trash) is deleted too. **Clear** takes a photo off the list, and **Clear list**
+all of them: Photobox forgets them, so a copy that is still somewhere shows up again. Clearing stays on
+the computer running Photobox.
+
+A copy that changed since (other bytes at that path) is not deleted. Without the macOS Trash (on Linux)
+files are deleted right away.
+
 ## Commands
 
 ```
@@ -85,7 +109,8 @@ npm run fake-takeout -- fixtures/demo   # build a demo export that hits every ed
 ```
 
 The library database and thumbnail cache live in `~/.photobox`. You can change this with
-`--data` or `PHOTOBOX_DATA`. Imported source folders are read-only. Native backup uploads
+`--data` or `PHOTOBOX_DATA`. Imported source folders are only read, except that a photo you delete
+goes to the Trash from there too. Native backup uploads
 also store **originals** in this data folder's `inbox/`; keep those originals before
 deleting the data folder to reset Photobox.
 
@@ -252,8 +277,9 @@ address. Nothing is reachable from the internet unless you forward a port yourse
 4. To install Photobox as an app, install its certificate on the phone once (the pairing page
    walks you through it), then choose **Install app** in the browser menu.
 
-A paired phone can browse the timeline and albums, view photos and videos, and set favorites.
-Adding or removing folders, rescanning and pairing stay on the computer. The sidebar's
+A paired phone can browse the timeline and albums, view photos and videos, set favorites and
+delete photos. Adding or removing folders, rescanning, pairing and clearing the Deleted list stay on
+the computer. The sidebar's
 **Devices** section lists paired devices and when each was last seen; disconnecting one locks
 it out immediately.
 
@@ -304,10 +330,10 @@ it's opened from Finder.
 
 ## Keyboard (viewer)
 
-`←` `→` browse · `I` info · `F` favorite · `L` play live photo · `⌘C` copy the photo · `Esc` close
+`←` `→` browse · `I` info · `F` favorite · `L` play live photo · `⌘C` copy the photo · `⌫` delete · `Esc` close
 
 Right-clicking a photo, in the timeline or the viewer, offers **Copy Photo** (full size, to paste
-into a mail or a chat), **Show in Finder** (on the computer running Photobox) and **Get Info**.
+into a mail or a chat), **Show in Finder** (on the computer running Photobox), **Get Info** and **Delete…**.
 
 ## Layout
 
@@ -333,6 +359,7 @@ src/server.js            HTTP API: the localhost listener and the one for paired
 src/remote.js            pairing codes and device tokens
 src/uploads.js           native resumable uploads and full-SHA-256 reception receipts
 src/backup.js            managed inbox indexing, automatic verified export, retries/proof
+src/deletions.js         deleting a photo everywhere, the Deleted list, telling phones
 src/tls.js               Photobox's own CA and server certificate for --listen
 public/                  the app: justified timeline, year scrubber, albums, viewer
 public/pair.html, pair.js  the page a phone opens from the QR code
@@ -349,7 +376,8 @@ browser cookies cannot authorize those uploads.
 With `--listen`, a second listener serves other devices, over HTTPS only. Every request needs a
 paired device's token, except the pairing page and the CA download. Tokens are 256-bit random
 values sent as a cookie (HttpOnly, Secure, SameSite=Strict) or a bearer header. The database
-stores only their SHA-256. Pairing codes work once and expire after 10 minutes. Errors are
+stores only their SHA-256. Pairing codes work once and expire after 10 minutes. A paired device can
+delete photos; their files go to the Trash on the computer, where they can be put back. Errors are
 answered with a short JSON message, never a stack trace.
 
 The certificate authority lives in `~/.photobox/tls`. Photobox renews the server certificate
@@ -364,7 +392,8 @@ and `--tls-key`.
 - Reading `.zip` parts directly (extract them first).
 - Transcoding for videos the browser can't play (`.avi`, `.mts`, …). Those show a thumbnail and **Show in Finder**.
 - Writing metadata back into files. Favorites you set in Photobox live in its database.
-- Physical-device acceptance and release packaging for Android, and user-confirmed phone cleanup.
+- Physical-device acceptance and release packaging for Android, and freeing phone space for photos
+  that are safely backed up (deleting a photo you deleted in Photobox works already).
   The [phone backup plan](docs/phone-backup-plan.md) tracks the next milestones.
 - `--listen` in the desktop app. For now, start network access with `photobox serve --listen`.
 - Choosing an archive in the desktop app (it opens the one `photobox serve` last ran in), and an

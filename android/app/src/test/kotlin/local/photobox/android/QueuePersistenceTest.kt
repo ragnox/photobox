@@ -3,7 +3,10 @@ package local.photobox.android
 import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import android.database.sqlite.SQLiteDatabase
+import java.io.File
 import java.util.UUID
+import kotlinx.serialization.json.*
 import kotlin.test.*
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -105,5 +108,80 @@ class QueuePersistenceTest {
             dao.progress(first.id, "first", AssetState.AWAITING_HOST, "a".repeat(64), "/old", 1_000, null, null, true, true, false, 300)
             assertEquals(next.id, dao.pending(listOf("DCIM/Camera/"), "first", 1).single().id)
         } finally { db.close() }
+    }
+
+    @Test fun `a photo deleted in Photobox waits for the user, is never uploaded, and the decision is reported once`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val db = Room.inMemoryDatabaseBuilder(context, BackupDatabase::class.java).build()
+        try {
+            val dao = db.assets()
+            val item = dao.discover(asset())
+            dao.activate("first")
+            dao.progress(item.id, "first", AssetState.VERIFIED, "a".repeat(64), "/old", 1_000, null, 1, true, true, true)
+            assertEquals(1, dao.requestDeletion("a".repeat(64)))
+            assertEquals(0, dao.requestDeletion("a".repeat(64)), "asked about once")
+            assertEquals(0, dao.requestDeletion("b".repeat(64)))
+            assertTrue(dao.pending(listOf("DCIM/Camera/"), "first").isEmpty())
+            assertEquals(0L, dao.unverified(listOf("DCIM/Camera/")), "a finished backup, not one waiting")
+            assertEquals(listOf(item.id), dao.deletionRequests().map { it.id })
+            assertTrue(dao.unreportedDeletions().isEmpty(), "nothing decided yet")
+            assertEquals(1, dao.decideDeletion(listOf(item.id), AssetState.TRASHED))
+            assertEquals(listOf(item.id), dao.unreportedDeletions().map { it.id })
+            dao.deletionsReported(listOf(item.id))
+            assertTrue(dao.unreportedDeletions().isEmpty())
+            assertEquals(0, dao.cancelDeletion("a".repeat(64)), "a copy in the phone's trash stays there")
+            dao.activate("replacement")
+            assertEquals(AssetState.TRASHED, dao.get(item.id)!!.state, "pairing again doesn't bring it back")
+            assertTrue(dao.pending(listOf("DCIM/Camera/"), "replacement").isEmpty())
+            assertEquals(0, dao.claim(item.id, "replacement"))
+        } finally { db.close() }
+    }
+
+    @Test fun `cleared from the host's Deleted list, a kept copy is backed up again from scratch`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val db = Room.inMemoryDatabaseBuilder(context, BackupDatabase::class.java).build()
+        try {
+            val dao = db.assets()
+            val item = dao.discover(asset())
+            dao.activate("first")
+            dao.progress(item.id, "first", AssetState.VERIFIED, "a".repeat(64), "/old", 1_000, null, 1, true, true, true)
+            dao.requestDeletion("a".repeat(64))
+            assertEquals(1, dao.decideDeletion(listOf(item.id), AssetState.KEPT))
+            assertEquals(0, dao.decideDeletion(listOf(item.id), AssetState.TRASHED), "decided once")
+            assertEquals(1, dao.cancelDeletion("a".repeat(64)))
+            val again = dao.get(item.id)!!
+            assertEquals(AssetState.NEW, again.state)
+            assertFalse(again.exported)
+            assertNull(again.uploadUrl)
+            assertEquals(listOf(item.id), dao.pending(listOf("DCIM/Camera/"), "first").map { it.id })
+        } finally { db.close() }
+    }
+
+    @Test fun `a version 1 queue opens as version 2 with its uploads intact`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val name = "migration-${UUID.randomUUID()}.db"
+        // A database as the first release made it, from its exported schema.
+        val schema = Json.parseToJsonElement(File("schemas/local.photobox.android.BackupDatabase/1.json").readText()).jsonObject["database"]!!.jsonObject
+        SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(name).apply { parentFile!!.mkdirs() }, null).apply {
+            for (entity in schema["entities"]!!.jsonArray.map { it.jsonObject }) {
+                execSQL(entity["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", entity["tableName"]!!.jsonPrimitive.content))
+                for (index in entity["indices"]?.jsonArray.orEmpty()) execSQL(index.jsonObject["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", entity["tableName"]!!.jsonPrimitive.content))
+            }
+            for (query in schema["setupQueries"]!!.jsonArray) execSQL(query.jsonPrimitive.content)
+            execSQL("""INSERT INTO Asset (id, mediaKey, uri, filename, folder, size, modified, generation, takenAt, current, connectionId, sha256, uploadUrl, offset,
+                state, error, received, indexed, exported, attemptedAt, verifiedAt, discoveredAt)
+                VALUES ('x', 'k', 'content://media/external_primary/images/media/1', 'PXL.jpg', 'DCIM/Camera/', 10, 1, 1, 1, 1, 'first', '${"a".repeat(64)}', NULL, 0,
+                'VERIFIED', NULL, 1, 1, 1, 0, 5, 0)""")
+            version = 1
+            close()
+        }
+        val db = Room.databaseBuilder(context, BackupDatabase::class.java, name).build()
+        try {
+            val migrated = db.assets().get("x")!!
+            assertEquals(AssetState.VERIFIED, migrated.state)
+            assertEquals(5L, migrated.verifiedAt)
+            assertFalse(migrated.deletionReported)
+            assertEquals(1, db.assets().requestDeletion("a".repeat(64)))
+        } finally { db.close(); context.deleteDatabase(name) }
     }
 }

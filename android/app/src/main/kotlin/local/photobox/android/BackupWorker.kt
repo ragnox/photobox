@@ -1,15 +1,18 @@
 package local.photobox.android
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.ActivityManager
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkManager
@@ -55,6 +58,8 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                     if (found.folder in graph.settings.settings.value.folders) dao.discover(found)
                 }
                 graph.settings.update { it.copy(knownFolders = folders) }
+                // Before anything is uploaded: a photo deleted in Photobox is deleted here, not backed up again.
+                var deletions = syncDeletions(api, connection.id)
                 var retry = false
                 val assets = dao.pending(graph.settings.settings.value.folders.toList(), connection.id)
                 for (stored in assets) {
@@ -72,7 +77,8 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                             continue
                         }
                         val result = backUp(asset, connection, api)
-                        if (!result.verified) retry = true
+                        if (result.deleted) deletions++
+                        else if (!result.verified) retry = true
                     } catch (e: CancellationException) { throw e }
                     catch (e: SourceChanged) {
                         dao.get(asset.id)?.let { cancelPartial(api, it) }
@@ -93,6 +99,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                         retry = retry || !blocked
                     }
                 }
+                if (deletions > 0) notifyDeletions()
                 retry = retry || dao.pending(graph.settings.settings.value.folders.toList(), connection.id, 1).isNotEmpty()
                 if (!retry && dao.unverified(graph.settings.settings.value.folders.toList()) == 0L) {
                     graph.settings.update { it.copy(lastSuccess = System.currentTimeMillis()) }
@@ -114,6 +121,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             val receipt = api.check(listOf(asset.sha256!!)).single()
             ensureAllowed(connection.id, asset.folder)
             requireCurrent(asset)
+            if (receipt.deleted) return requestDeletion(api, asset, connection.id, receipt)
             if (receipt.received) { saveReceipt(asset, connection.id, receipt); return receipt }
         }
         val digest = MessageDigest.getInstance("SHA-256")
@@ -135,6 +143,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
         save(asset, connection.id)
         val existing = api.check(listOf(hash)).single()
+        if (existing.deleted) { requireCurrent(asset); return requestDeletion(api, asset, connection.id, existing) }
         if (existing.received) { requireCurrent(asset); saveReceipt(asset, connection.id, existing); return existing }
         var offset = asset.uploadUrl?.let { api.offset(it, asset.size) }
         // A complete tus offset without reception proof can represent lost/corrupt
@@ -149,7 +158,11 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSXXX")
                     .format(Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()))
             }
-            val location = api.create(asset.filename, asset.size, hash, capturedAt, asset.mediaKey.take(128))
+            val location = try { api.create(asset.filename, asset.size, hash, capturedAt, asset.mediaKey.take(128)) }
+            catch (e: HostException) {
+                if (e.status != 410) throw e
+                return requestDeletion(api, asset, connection.id, Receipt(hash, false, false, false, deleted = true))
+            }
             asset = asset.copy(uploadUrl = location, offset = 0, state = AssetState.UPLOADING, error = null)
             save(asset, connection.id) // Persist URL before the first PATCH.
             offset = 0
@@ -174,6 +187,62 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val receipt = api.check(listOf(hash)).single()
         saveReceipt(asset, connection.id, receipt)
         return receipt
+    }
+
+    /**
+     * Learn what was deleted in Photobox since the last run, and tell the host what became of this
+     * phone's copies. Returns how many copies here newly wait for the user to delete them.
+     */
+    private suspend fun syncDeletions(api: HostApi, connection: String): Int {
+        var requested = 0
+        try {
+            var seen = graph.settings.deletionsSeen(connection)
+            do {
+                ensureAllowed(connection)
+                val page = api.deletions(seen)
+                for (change in page.deletions) {
+                    if (change.deleted) requested += dao.requestDeletion(change.sha256) else dao.cancelDeletion(change.sha256)
+                    seen = change.seq
+                }
+                graph.settings.sawDeletions(connection, seen)
+            } while (page.more && page.deletions.isNotEmpty())
+        } catch (e: HostException) {
+            if (e.status == 404) return 0 // A host from before deleting: there is nothing to learn.
+            throw e
+        }
+        // Gone from this phone another way (deleted in a gallery app): nothing left to ask about.
+        val gone = dao.deletionRequests().filter { graph.catalog.find(it) == null }.map { it.id }
+        if (gone.isNotEmpty()) dao.decideDeletion(gone, AssetState.TRASHED)
+        val decided = dao.unreportedDeletions()
+        if (decided.isNotEmpty()) {
+            api.reportDeletions(decided.map { DeletionOutcome(it.sha256!!, if (it.state == AssetState.TRASHED) "trashed" else "kept") })
+            dao.deletionsReported(decided.map { it.id })
+        }
+        return requested
+    }
+
+    /** Deleted in Photobox: not backed up, but waiting for the user to delete it here too. */
+    private suspend fun requestDeletion(api: HostApi, asset: Asset, connection: String, receipt: Receipt): Receipt {
+        cancelPartial(api, asset)
+        ensureAllowed(connection, asset.folder)
+        save(asset.copy(state = AssetState.DELETE_REQUESTED, uploadUrl = null, offset = 0, received = false, indexed = false, exported = false,
+            error = null, verifiedAt = null), connection)
+        return receipt
+    }
+
+    /** Android only lets the user delete photos the camera made: a notification brings them to the app to confirm it. */
+    private suspend fun notifyDeletions() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val waiting = dao.deletionRequests().size
+        if (waiting == 0) return
+        val manager = applicationContext.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(DELETIONS, "Photos deleted in Photobox", NotificationManager.IMPORTANCE_DEFAULT))
+        val open = PendingIntent.getActivity(applicationContext, 1, Intent(applicationContext, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        manager.notify(1002, NotificationCompat.Builder(applicationContext, DELETIONS).setSmallIcon(R.drawable.ic_photobox)
+            .setContentTitle(if (waiting == 1) "A photo was deleted in Photobox" else "$waiting photos were deleted in Photobox")
+            .setContentText("Tap to delete ${if (waiting == 1) "it" else "them"} from this phone too")
+            .setContentIntent(open).setAutoCancel(true).build())
     }
 
     private suspend fun cancelPartial(api: HostApi, asset: Asset): Receipt? {
@@ -227,5 +296,5 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         return ForegroundInfo(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
     private class SourceChanged(message: String) : IOException(message)
-    companion object { private const val CHANNEL = "backup"; private const val CHUNK_SIZE = 2 * 1024 * 1024 }
+    companion object { private const val CHANNEL = "backup"; private const val DELETIONS = "deletions"; private const val CHUNK_SIZE = 2 * 1024 * 1024 }
 }

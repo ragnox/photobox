@@ -401,6 +401,15 @@ export class Indexer extends EventEmitter {
     stat.size = identity.size;
     stat.mtimeMs = identity.mtimeMs;
     if (upload && (identity.sha256 !== upload.sha256 || identity.size !== upload.size)) throw new Error('Inbox original failed SHA-256 verification');
+    // A copy of a photo you deleted (a drive plugged back in, a new Takeout): it is deleted too.
+    if (this.library.deletedCopy(identity.sha256, file, source.path, manifest?.root ?? null)) {
+      if (existing) {
+        this.library.q('DELETE FROM files WHERE path = ?').run(file);
+        this.needsPrune = true;
+      }
+      this.emit('deleted-found');
+      return false;
+    }
     const quick = await quickHash(file, identity.size);
     if (listed?.entry.sha256 && listed.entry.sha256 !== identity.sha256) listed = null;
     if (exported && !listed) {
@@ -454,6 +463,13 @@ export class Indexer extends EventEmitter {
       if (String(after.mtimeNs) !== identity.mtimeNs || String(after.ctimeNs) !== identity.ctimeNs || Number(after.size) !== identity.size) {
         this.needsPrune ||= created;
         throw new Error('File changed while indexing');
+      }
+      // Deleted while this file was being read: not shown again. The new item, if any, has no file and goes.
+      if (this.library.deletedCopy(identity.sha256, file, source.path, manifest?.root ?? null)) {
+        if (existing) this.library.q('DELETE FROM files WHERE path = ?').run(file);
+        this.needsPrune = true;
+        this.emit('deleted-found');
+        return false;
       }
       if (existing && existing.media_id !== media.id) {
         const old = this.library.media(existing.media_id);

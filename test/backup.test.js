@@ -197,7 +197,7 @@ test('phone originals are indexed with capture metadata and automatically export
   const bytes = await jpeg();
   const id = await s.upload(bytes);
   await s.app.backup.flush();
-  assert.deepEqual(await s.check(bytes), { sha256: sha(bytes), received: true, indexed: true, exported: true });
+  assert.deepEqual(await s.check(bytes), { sha256: sha(bytes), received: true, indexed: true, exported: true, deleted: false });
   const receipt = s.receipt(id);
   assert.equal(receipt.relative_path, '2024/01/PXL_original.jpg', 'capture-local month, not inbox UTC month');
   assert.deepEqual(await fs.readFile(path.join(s.dest, receipt.relative_path)), bytes);
@@ -293,7 +293,7 @@ test('inbox corruption cannot retain indexed/exported cleanup proof, and failure
   await s.app.backup.flush();
   const row = s.app.backup.uploads.row(id);
   await fs.writeFile(s.app.backup.uploads.destination(row), Buffer.alloc(bytes.length));
-  assert.deepEqual(await s.check(bytes), { sha256: sha(bytes), received: false, indexed: false, exported: false });
+  assert.deepEqual(await s.check(bytes), { sha256: sha(bytes), received: false, indexed: false, exported: false, deleted: false });
   await s.app.backup.flush();
   assert.ok(s.app.backup.status.failed > 0);
   assert.match(s.app.backup.status.error, /SHA-256/);
@@ -389,7 +389,7 @@ test('reception without an export destination still produces a visible, full-has
   const bytes = await jpeg();
   await s.upload(bytes);
   await s.app.backup.flush();
-  assert.deepEqual(await s.check(bytes), { sha256: sha(bytes), received: true, indexed: true, exported: false });
+  assert.deepEqual(await s.check(bytes), { sha256: sha(bytes), received: true, indexed: true, exported: false, deleted: false });
   const status = await s.local('GET', '/api/status');
   assert.equal(status.json.backup.configured, false);
   assert.equal(status.json.backup.indexed, 1);
