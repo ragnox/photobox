@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import androidx.room.Room
 import androidx.work.*
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 
 class AppGraph(context: Context) {
@@ -16,6 +17,7 @@ class AppGraph(context: Context) {
     val connections = ConnectionStore(context)
     val settings = SettingsStore(context)
     val catalog = MediaCatalog(context)
+    val finder = HostFinder(context)
     val backupMutex = Mutex()
     val scheduler = BackupScheduler(context, connections, settings)
 }
@@ -74,6 +76,11 @@ class BackupScheduler(private val context: Context, private val connections: Con
         work.enqueueUniquePeriodicWork(PERIODIC, if (restart) ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE else ExistingPeriodicWorkPolicy.UPDATE,
             PeriodicWorkRequestBuilder<BackupWorker>(15, TimeUnit.MINUTES).setConstraints(constraints())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build())
+    }
+    /** Opening the app: back up now. A run that is going on goes on; one waiting after failures waits no longer. */
+    suspend fun soon() {
+        val waiting = work.getWorkInfosForUniqueWorkFlow(NOW).first().any { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount > 0 }
+        now(replace = waiting)
     }
     fun now(replace: Boolean = false) {
         if (settings.settings.value.paused || connections.connection.value == null) return

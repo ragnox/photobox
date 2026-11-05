@@ -200,6 +200,10 @@ test('phone originals are indexed with capture metadata and automatically export
   assert.deepEqual(await s.check(bytes), { sha256: sha(bytes), received: true, indexed: true, exported: true, deleted: false });
   const receipt = s.receipt(id);
   assert.equal(receipt.relative_path, '2024/01/PXL_original.jpg', 'capture-local month, not inbox UTC month');
+  // The app's status bar says the phone is sending photos, and the log that they were exported.
+  const { activity } = (await s.local('GET', '/api/status')).json;
+  assert.deepEqual(activity.now.map((i) => i.text), ['Receiving photos from Backup test · 1 so far']);
+  assert.equal(activity.recent[0].text, `Exported 1 phone photo into ${s.dest}`);
   assert.deepEqual(await fs.readFile(path.join(s.dest, receipt.relative_path)), bytes);
   const photo = s.library.mediaBySha256(sha(bytes));
   assert.equal(photo.local_time, '2024-01-01 03:00:00');

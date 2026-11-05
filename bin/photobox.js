@@ -12,6 +12,7 @@ import { Library } from '../src/db.js';
 import { startPhotobox, openLibrary, scanAll, runningInstance, AlreadyRunning } from '../src/app.js';
 import { exportLibrary } from '../src/export.js';
 import { MANIFEST } from '../src/manifest.js';
+import { tilde } from '../src/activity.js';
 
 const USAGE = `photobox - your photos, on your disk
 
@@ -62,6 +63,13 @@ const USAGE = `photobox - your photos, on your disk
       Rescans the library first; run it again to copy only what's new.
       In an archive, <dest> can be left out: the export goes into the archive.
 
+  photobox activity <running|done|failed> <text> [--id <name>]
+      Tell the running Photobox what another program is doing, for the status bar
+      of its app and its activity log: a script copying the archive to a backup
+      drive, say. running shows <text> while it goes on; done or failed (same
+      --id) ends it and keeps <text> in the log. Without a running Photobox it
+      does nothing.
+
 Options:
   --archive <dir>
                  Use the archive at <dir> instead of the one the current folder is in
@@ -91,6 +99,7 @@ const { values: opts, positionals } = parseArgs({
     'tls-cert': { type: 'string' },
     'tls-key': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
+    id: { type: 'string' },
     keep: { type: 'string', multiple: true, default: [] },
     undo: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
@@ -113,7 +122,8 @@ function throttle(fn) {
 }
 
 const [command = 'serve', ...args] = positionals;
-if (opts.help || !['init', 'sort', 'merge', 'adopt', 'serve', 'scan', 'export'].includes(command) || (command === 'init' && args.length !== 1) ||
+if (opts.help || !['init', 'sort', 'merge', 'adopt', 'serve', 'scan', 'export', 'activity'].includes(command) || (command === 'init' && args.length !== 1) ||
+    (command === 'activity' && (!['running', 'done', 'failed'].includes(args[0]) || args.length < 2)) ||
     ((command === 'sort' || command === 'adopt') && args.length) || (command === 'merge' && args.length !== (opts.undo ? 0 : 1))) {
   console.log(USAGE);
   process.exit(opts.help ? 0 : 1);
@@ -131,6 +141,17 @@ try {
 } catch (err) {
   fail(err.message);
 }
+/** Tell the Photobox running at `url` what this program is doing (see `photobox activity`). Never fails. */
+async function tell(url, id, state, text, done = null, total = null) {
+  try {
+    const res = await fetch(`${url}/api/activity`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, state, text, done, total }),
+      signal: AbortSignal.timeout(15_000), // a Photobox busy importing answers late
+    });
+    if (!res.ok) console.error(`Photobox didn't take the activity: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
+  } catch (err) { console.error(`Couldn't tell Photobox: ${err.message}`); }
+}
+
 const dest = command === 'export' ? (args.length ? path.resolve(args.shift()) : archive?.root) : null;
 if (command === 'export' && !dest) {
   console.log(USAGE);
@@ -138,7 +159,7 @@ if (command === 'export' && !dest) {
 }
 if (Boolean(opts['tls-cert']) !== Boolean(opts['tls-key'])) fail('--tls-cert and --tls-key go together');
 
-const folders = args.map((f) => path.resolve(f));
+const folders = command === 'activity' ? [] : args.map((f) => path.resolve(f));
 for (const dir of folders) if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) fail(`Not a folder: ${dir}`);
 
 function init(folder) {
@@ -164,10 +185,31 @@ function logProgress(indexer) {
   indexer.on('status', (s) => s.phase === 'indexing' && log(s));
 }
 
-async function runExport(library) {
+async function runExport(library, other) {
   const dryRun = opts['dry-run'];
-  const onProgress = throttle(({ phase, done, total }) => console.log(`  ${phase} ${done}/${total}`));
-  const result = await exportLibrary(library, dest, { dryRun, onProgress });
+  // A running Photobox shows the export in its status bar.
+  const id = `export:${dest}`.slice(0, 64).replace(/[^\w.:-]/g, '_');
+  const report = other && !dryRun ? (state, text, done, total) => tell(other.url, id, state, text, done, total) : async () => {};
+  const where = tilde(dest);
+  let reporting = report('running', `Exporting into ${where}`);
+  const onProgress = throttle(({ phase, done, total }) => {
+    console.log(`  ${phase} ${done}/${total}`);
+    reporting = reporting.then(() => report('running', `Exporting into ${where} · ${phase} ${done.toLocaleString('en')} of ${total.toLocaleString('en')}`, done, total));
+  });
+  let result;
+  try {
+    result = await exportLibrary(library, dest, { dryRun, onProgress });
+  } catch (err) {
+    await reporting;
+    await report('failed', `Export into ${where} failed: ${err.message}`);
+    throw err;
+  }
+  await reporting;
+  if (!dryRun) {
+    await report(result.skipped.length ? 'failed' : 'done', (result.copied ? `Exported ${count(result.copied, 'photo')} into ${where}` : `Checked ${where}: nothing new to export`) +
+      (result.superseded ? ` · ${count(result.superseded, 'older version')} set aside` : '') +
+      (result.skipped.length ? ` · ${count(result.skipped.length, 'photo')} not exported` : ''));
+  }
   if (dryRun) {
     console.log(`Would copy ${result.planned.length} of ${result.total} items to ${dest} (${result.present} already there)`);
     for (const p of result.planned.slice(0, 20)) console.log(`  ${p.rel}  <-  ${p.source}`);
@@ -220,7 +262,7 @@ async function scanOrExport() {
         if (!stats.photos && !stats.videos) return 1;
       }
     }
-    return command === 'export' ? await runExport(library) : 0;
+    return command === 'export' ? await runExport(library, other) : 0;
   } catch (err) {
     console.error(err.message);
     return 1;
@@ -413,7 +455,17 @@ async function sort() {
   }
 }
 
+/** `photobox activity`: what another program is doing, for the running Photobox's status bar. */
+async function activity() {
+  const other = runningInstance(loadConfig({ dataDir, archive }));
+  if (!other) return 0;
+  const [state, ...words] = args;
+  await tell(other.url, opts.id ?? 'script', state, words.join(' '));
+  return 0;
+}
+
 if (command === 'serve') await serve();
+else if (command === 'activity') process.exitCode = await activity();
 else if (command === 'sort') process.exitCode = await sort();
 else if (command === 'merge') process.exitCode = await merge();
 else if (command === 'adopt') process.exitCode = adopt();

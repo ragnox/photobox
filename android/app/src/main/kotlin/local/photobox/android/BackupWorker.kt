@@ -39,7 +39,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         graph.backupMutex.withLock {
-            val connection = graph.connections.connection.value ?: return@withLock Result.success()
+            val paired = graph.connections.connection.value ?: return@withLock Result.success()
             if (graph.settings.settings.value.paused) return@withLock Result.success()
             deadline = SystemClock.elapsedRealtime() + 9 * 60_000
             graph.settings.update { it.copy(lastRun = System.currentTimeMillis(), error = null) }
@@ -50,9 +50,10 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 foregroundActive = promoteWhenVisible(process.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
                     setForeground(foreground())
                 }
-                dao.activate(connection.id)
-                val api = HostApi(connection)
-                val capabilities = api.capabilities()
+                dao.activate(paired.id)
+                val (connection, api, capabilities) = reach(paired) { graph.finder.find() }
+                // The computer has another address now: try that one first next time.
+                if (connection != paired) graph.connections.save(connection)
                 val folders = graph.catalog.scan { found ->
                     ensureAllowed(connection.id)
                     if (found.folder in graph.settings.settings.value.folders) dao.discover(found)
@@ -107,15 +108,18 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 if (retry) Result.retry() else Result.success()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                graph.settings.update { it.copy(error = e.message ?: "Backup could not run") }
-                if (e is SecurityException || e is IllegalArgumentException || (e is HostException && !e.retryable)) Result.success()
+                val unreachable = e is IOException && e !is HostException
+                graph.settings.update { it.copy(error = if (unreachable) "Can't reach Photobox on your computer (${e.message})" else e.message ?: "Backup could not run") }
+                // Away from home, say: the next regular run tries again, instead of waiting longer after each miss.
+                if (unreachable || e is SecurityException || e is IllegalArgumentException || (e is HostException && !e.retryable)) Result.success()
                 else Result.retry()
             }
         }
     }
 
     private suspend fun backUp(initial: Asset, connection: Connection, api: HostApi): Receipt {
-        var asset = initial
+        // Begun when the computer had another address: go on with it where the computer is now.
+        var asset = initial.uploadUrl?.let { initial.copy(uploadUrl = movedUpload(it, connection.server)) } ?: initial
         // A lost final response is reconciled before another upload is created.
         if (asset.sha256 != null) {
             val receipt = api.check(listOf(asset.sha256!!)).single()

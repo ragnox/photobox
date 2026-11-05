@@ -2,6 +2,7 @@ package local.photobox.android
 
 import android.app.Application
 import android.content.IntentSender
+import android.os.PowerManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +23,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val counts = graph.database.assets().counts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val deletionRequests = graph.database.assets().observeDeletionRequests().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val access = MutableStateFlow(graph.catalog.access())
+    /** Whether Android lets backups run while the app isn't open, battery optimization aside. */
+    val background = MutableStateFlow(runsInBackground())
     val pairing = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
 
@@ -42,15 +45,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         finally { pairing.value = false }
     }
 
+    private fun runsInBackground() = getApplication<Application>().run {
+        getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+    }
+
     fun accessChanged() = viewModelScope.launch {
         access.value = graph.catalog.access()
+        background.value = runsInBackground()
         (getApplication<Application>() as PhotoboxApplication).observeMedia()
         if (access.value.any) {
             try {
                 val folders = graph.catalog.scan { }
                 graph.settings.update { it.copy(knownFolders = folders) }
                 graph.database.assets().retryErrors()
-                graph.scheduler.now()
+                graph.scheduler.soon()
             } catch (e: Exception) { error.value = e.message }
         }
     }

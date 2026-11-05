@@ -11,6 +11,7 @@ import { thumbPath, previewPath, makePreview } from './thumbs.js';
 import { requestToken, tokenCookie, nativePairingPayload } from './remote.js';
 import { exportedCopies } from './manifest.js';
 import { sourceProblem } from './config.js';
+import { STALE_MS, backupNow, count, indexingNow, nameOfSource } from './activity.js';
 
 const run = promisify(execFile);
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
@@ -46,9 +47,19 @@ function parseCursor(value) {
  */
 const showInFinder = (file) => run('open', ['-R', file]);
 
-export function createApp({ library, indexer, watcher, config, network = null, uploads = null, backup = null, deletions = null, hostControl = null, reveal = showInFinder }, { remote = false } = {}) {
+/** "Deleted 3 photos", for the activity log; `device` deleted them in its browser. */
+const deletedText = (n, waiting, device) => `Deleted ${count(n, 'photo')}${device ? ` on ${device.name}` : ''}` +
+  (waiting ? ` · ${count(waiting, 'file')} ${waiting === 1 ? 'waits' : 'wait'} for a drive to be plugged in` : '');
+
+export function createApp({ library, indexer, watcher, config, network = null, uploads = null, backup = null, deletions = null, hostControl = null, activity = null, reveal = showInFinder }, { remote = false } = {}) {
   const app = express();
   app.disable('x-powered-by');
+  // A phone backing up: shown in the status bar while it does (see activity.js).
+  const phoneSeen = (req) => {
+    if (!remote || !activity || !uploads) return;
+    try { activity.phone(uploads.authenticate(req.headers.authorization).device); } catch { /* Not paired: the route answers that. */ }
+  };
+  const deviceName = (id) => library.devices().find((d) => d.id === id)?.name ?? 'a phone';
 
   if (remote) {
     app.use((req, res, next) => {
@@ -69,6 +80,7 @@ export function createApp({ library, indexer, watcher, config, network = null, u
   // to the listener's device authentication. Cookies cannot authorize binary writes.
   app.all(['/api/uploads', '/api/uploads/:id'], async (req, res) => {
     if (!remote || !uploads) return res.status(403).json({ error: 'Uploads require the paired HTTPS listener' });
+    phoneSeen(req);
     await uploads.handle(req, res);
   });
 
@@ -84,12 +96,14 @@ export function createApp({ library, indexer, watcher, config, network = null, u
 
   app.post('/api/assets/check', async (req, res) => {
     if (!remote || !uploads) return res.status(403).json({ error: 'Backup checks require the paired HTTPS listener' });
+    phoneSeen(req);
     res.json(await uploads.check(req.headers.authorization, req.body?.sha256));
   });
 
   app.get('/api/backup/capabilities', (req, res) => {
     if (!remote || !uploads) return res.status(403).json({ error: 'Backup capabilities require the paired HTTPS listener' });
     uploads.authenticate(req.headers.authorization);
+    phoneSeen(req);
     res.json({ version: 1, tusVersion: '1.0.0', maxFileBytes: config.uploadMaxBytes, extensions: [...MEDIA_EXT].sort() });
   });
 
@@ -97,18 +111,41 @@ export function createApp({ library, indexer, watcher, config, network = null, u
   app.get('/api/backup/deletions', (req, res) => {
     if (!remote || !uploads || !deletions) return res.status(403).json({ error: 'Deletions require the paired HTTPS listener' });
     uploads.authenticate(req.headers.authorization);
+    phoneSeen(req);
     res.json(deletions.feed(req.query.after));
   });
 
   app.post('/api/backup/deletions/report', (req, res) => {
     if (!remote || !uploads || !deletions) return res.status(403).json({ error: 'Deletions require the paired HTTPS listener' });
-    res.json(deletions.reported(uploads.authenticate(req.headers.authorization).device, req.body?.items));
+    const { device } = uploads.authenticate(req.headers.authorization);
+    phoneSeen(req);
+    const result = deletions.reported(device, req.body?.items);
+    const trashed = req.body.items.filter((i) => i.state === 'trashed').length;
+    const kept = req.body.items.length - trashed;
+    if (trashed) activity?.add(`${device.name} deleted ${count(trashed, 'photo')} you deleted in Photobox`);
+    if (kept) activity?.add(`${device.name} kept ${count(kept, 'photo')} you deleted in Photobox`);
+    res.json(result);
   });
 
   const hostOnly = (req, res, next) => {
     if (remote) return res.status(403).json({ error: 'Only available on the computer running Photobox' });
     next();
   };
+
+  // Other programs on this computer saying what they're doing: `photobox export`, a backup script (`photobox activity`).
+  app.post('/api/activity', hostOnly, (req, res) => {
+    if (!activity) return res.status(503).json({ error: 'No activity log' });
+    const { id, state, text, done = null, total = null } = req.body ?? {};
+    const number = (n) => n === null || (Number.isSafeInteger(n) && n >= 0);
+    if (typeof id !== 'string' || !/^[\w.:-]{1,64}$/.test(id) || !['running', 'done', 'failed'].includes(state) ||
+        typeof text !== 'string' || !text.trim() || text.length > 300 || !number(done) || !number(total)) {
+      return res.status(400).json({ error: 'Expected { id, state: "running" | "done" | "failed", text, done?, total? }' });
+    }
+    const key = `ext:${id}`;
+    if (state === 'running') activity.start(key, text.trim(), { done, total, staleMs: STALE_MS });
+    else activity.end(key, text.trim(), { failed: state === 'failed' });
+    res.json({ ok: true });
+  });
 
   app.get('/api/host', hostOnly, (req, res) => {
     if (!hostControl) return res.status(503).json({ error: 'Host control is unavailable' });
@@ -156,6 +193,10 @@ export function createApp({ library, indexer, watcher, config, network = null, u
       backup: !remote && backup ? { ...backup.status, destination: config.backupDir } : null,
       uploads: !remote && uploads ? uploads.progress() : null,
       deleted: deletions?.counts() ?? null,
+      activity: !remote && activity ? activity.snapshot([
+        ...indexingNow(indexer.status, (folder) => nameOfSource(library, folder)),
+        ...backupNow(uploads?.progress(), backup?.status, deviceName, config.backupDir),
+      ]) : null,
     });
   });
 
@@ -230,6 +271,7 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     if (!deletions) return res.status(503).json({ error: 'Deleting is unavailable' });
     const result = await deletions.delete(Number(req.params.id));
     if (!result) return res.status(404).json({ error: 'Not found' });
+    activity?.add(deletedText(1, result.waiting, req.device));
     res.json({ ...result, version: indexer.version });
   });
 
@@ -240,7 +282,10 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     if (!Array.isArray(list) || !list.length || list.length > 10_000 || !list.every((id) => Number.isSafeInteger(id) && id > 0)) {
       return res.status(400).json({ error: 'ids must be a list of photo ids' });
     }
-    res.json({ ...await deletions.deleteMany(list), version: indexer.version });
+    const result = await deletions.deleteMany(list);
+    if (result.deleted.length) activity?.add(deletedText(result.deleted.length, result.waiting, req.device));
+    if (result.failed.length) activity?.add(`Couldn't delete ${count(result.failed.length, 'photo')} yet`, { failed: true });
+    res.json({ ...result, version: indexer.version });
   });
 
   app.get('/api/deletions', (req, res) => res.json(deletions?.list() ?? []));

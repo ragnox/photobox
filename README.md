@@ -114,6 +114,7 @@ photobox sort --undo                # put back what the last sort moved
 photobox merge <folder> [--dry-run] # inside an archive: bring in an export folder
 photobox merge --undo               # take out what the last merge brought in
 photobox adopt                      # inside an archive: take over the library in ~/.photobox
+photobox activity running|done|failed <text> [--id <name>]   # tell the app's status bar what a script does
 npm test                            # all tests; the fake-Takeout import runs on macOS with ffmpeg
 npm run test:ui                     # the web UI end to end, in a hidden Electron window
 npm run fake-takeout -- fixtures/demo   # build a demo export that hits every edge case
@@ -124,6 +125,25 @@ The library database and thumbnail cache live in `~/.photobox`. You can change t
 goes to the Trash from there too. Native backup uploads
 also store **originals** in this data folder's `inbox/`; keep those originals before
 deleting the data folder to reset Photobox.
+
+## The status bar
+
+Along the bottom of the app, Photobox says what it is doing: importing, a phone backing up or
+sending a photo, exporting phone photos, deleting. Click it for a log of what it did, newest
+first; the same thing happening again (a phone with nothing new, say) is counted, not repeated.
+The log is kept in the library's folder, so it survives a restart.
+
+Other programs on this computer can show up there too. `photobox export` does by itself while
+Photobox runs. A script that copies the archive to a backup drive can say what it's doing:
+
+```
+photobox activity running "Copying to the backup drive" --id drive
+photobox activity done "Backup drive up to date" --id drive      # or failed "…"
+```
+
+Run it in the archive or with `--archive`, so it finds the Photobox serving it. Without a
+running Photobox it does nothing, so a script never fails because of it. Something that says it's
+running and then goes quiet for 15 minutes ends in the log as stopped.
 
 ## Exporting to a folder you own
 
@@ -279,6 +299,9 @@ photobox serve --listen 0.0.0.0
 This also serves Photobox to phones on your Wi-Fi or VPN, over HTTPS on port 4568. Instead of
 `0.0.0.0` (every network this computer is on) you can give one address, such as a WireGuard
 address. Nothing is reachable from the internet unless you forward a port yourself.
+With `0.0.0.0`, Photobox is announced on the local network (DNS-SD `_photobox._tcp`, through
+Bonjour on macOS or Avahi on Linux), so Photobox for Android finds this computer again when the
+Wi-Fi router gives it another address.
 
 1. On the computer, open Photobox and choose **Connect a phone** in the sidebar. It shows a QR
    code with a one-time pairing code.
@@ -373,7 +396,9 @@ src/remote.js            pairing codes and device tokens
 src/uploads.js           native resumable uploads and full-SHA-256 reception receipts
 src/backup.js            managed inbox indexing, automatic verified export, retries/proof
 src/deletions.js         deleting a photo everywhere, the Deleted list, telling phones
+src/activity.js          the status bar's activity log: what Photobox and other programs do
 src/tls.js               Photobox's own CA and server certificate for --listen
+src/announce.js          announcing the listener on the local network, for phones to find
 public/                  the app: justified timeline, year scrubber, albums, viewer
 public/pair.html, pair.js  the page a phone opens from the QR code
 public/sw.js             service worker: installable app, cached thumbnails
@@ -394,7 +419,9 @@ delete photos; their files go to the Trash on the computer, where they can be pu
 answered with a short JSON message, never a stack trace.
 
 The certificate authority lives in `~/.photobox/tls`. Photobox renews the server certificate
-when your addresses change, and a phone that trusts the CA keeps trusting it. To use a
+when your addresses change, also while it runs, and a phone that trusts the CA keeps trusting it.
+The local-network announcement carries only the port: which host is the one a phone paired with
+only TLS tells it, so a phone's token never goes to another one. To use a
 certificate browsers already trust instead, such as one from `tailscale cert`, pass `--tls-cert`
 and `--tls-key`.
 

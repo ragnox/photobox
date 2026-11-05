@@ -1,6 +1,7 @@
 package local.photobox.android
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -38,6 +39,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@SuppressLint("BatteryLife") // Asks once to run in the background, which a backup app needs; the app isn't on the Play Store.
 @Composable
 private fun BackupScreen(model: MainViewModel = viewModel()) {
     val connection by model.connection.collectAsStateWithLifecycle()
@@ -45,6 +47,7 @@ private fun BackupScreen(model: MainViewModel = viewModel()) {
     val assets by model.assets.collectAsStateWithLifecycle()
     val counts by model.counts.collectAsStateWithLifecycle()
     val access by model.access.collectAsStateWithLifecycle()
+    val background by model.background.collectAsStateWithLifecycle()
     val pairing by model.pairing.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
     val deletionRequests by model.deletionRequests.collectAsStateWithLifecycle()
@@ -122,6 +125,13 @@ private fun BackupScreen(model: MainViewModel = viewModel()) {
             }
             item {
                 Text("Backup settings", style = MaterialTheme.typography.titleLarge)
+                if (background) Text("Backs up in the background, also when you haven't opened Photobox for a while.", style = MaterialTheme.typography.bodySmall)
+                else {
+                    Text("Android stops backups of apps you haven't opened for a while, to save battery. New photos then wait until you open Photobox.")
+                    Button(onClick = {
+                        context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")))
+                    }) { Text("Allow backup in the background") }
+                }
                 Setting("Unmetered network only", settings.unmetered) { value -> model.configure { it.copy(unmetered = value) } }
                 Setting("Only while charging", settings.charging) { value -> model.configure { it.copy(charging = value) } }
                 Text("Battery must not be low. Background work resumes when Android permits it.", style = MaterialTheme.typography.bodySmall)

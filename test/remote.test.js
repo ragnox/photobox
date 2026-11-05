@@ -13,6 +13,7 @@ import { Indexer } from '../src/indexer.js';
 import { createApp } from '../src/server.js';
 import { networkAccess, hashToken, nativePairingPayload } from '../src/remote.js';
 import { ensureCertificates } from '../src/tls.js';
+import { announce, announceCommand } from '../src/announce.js';
 
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 
@@ -208,4 +209,48 @@ test('certificates: renewed for new addresses, signed by the same CA, keys priva
   assert.equal(moved.ca, first.ca, 'a phone that trusts the CA keeps trusting Photobox');
   assert.equal(moved.fingerprint, first.fingerprint);
   for (const key of ['ca-key.pem', 'server-key.pem']) assert.equal((await fs.stat(path.join(dir, key))).mode & 0o777, 0o600, key);
+});
+
+test('a computer that gets a new address while running gets a certificate for it, and phones still trust it', async (t) => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'photobox-remote-'));
+  const config = loadConfig({ dataDir: path.join(tmp, 'data') });
+  const library = new Library(config.dbPath);
+  t.after(async () => { library.close(); await fs.rm(tmp, { recursive: true, force: true }); });
+  let now = ['192.0.2.10'];
+  const network = networkAccess(config, library, { address: '0.0.0.0', interfaces: () => now });
+  network.port = 4568;
+  const first = network.tls;
+  assert.equal(network.refresh(), false, 'nothing changed');
+
+  now = ['192.0.2.20'];
+  assert.equal(network.refresh(), true);
+  const san = new crypto.X509Certificate(network.tls.cert).subjectAltName;
+  assert.match(san, /IP Address:192\.0\.2\.20/);
+  assert.equal(network.tls.ca, first.ca, 'signed by the CA phones paired with');
+  assert.deepEqual(network.info().urls, ['https://192.0.2.20:4568']);
+  assert.equal(network.refresh(), false);
+
+  const one = networkAccess(config, library, { address: '127.0.0.1', interfaces: () => ['10.0.0.1'] });
+  assert.equal(one.refresh(), false, 'listening on one address: that address is all it serves');
+});
+
+test('the listener is announced on the local network by the system responder, and the announcer stops with Photobox', () => {
+  assert.deepEqual(announceCommand(4568, 'darwin'), ['/usr/bin/dns-sd', ['-R', 'Photobox', '_photobox._tcp', 'local', '4568']]);
+  assert.deepEqual(announceCommand(4568, 'linux'), ['avahi-publish-service', ['Photobox', '_photobox._tcp', '4568']]);
+  assert.equal(announceCommand(4568, 'win32'), null);
+
+  const runs = [];
+  const run = (file, args) => {
+    const child = { on() {}, unref() {}, stdin: { ended: false, on() {}, end() { this.ended = true; } } };
+    runs.push({ file, args, child });
+    return child;
+  };
+  const announced = announce(4568, { platform: 'darwin', run });
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].file, '/bin/sh');
+  assert.deepEqual(runs[0].args.slice(3), ['/usr/bin/dns-sd', '-R', 'Photobox', '_photobox._tcp', 'local', '4568']);
+  announced.close();
+  assert.equal(runs[0].child.stdin.ended, true, 'closing its input stops the announcer');
+  announce(4568, { platform: 'win32', run }).close();
+  assert.equal(runs.length, 1, 'nothing to announce with');
 });

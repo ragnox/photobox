@@ -97,22 +97,36 @@ function networkAddresses() {
  * computer is on. Uses your own certificate if given, otherwise one from
  * Photobox's own CA. `port` is filled in once the listener is up.
  */
-export function networkAccess(config, library, { address, tlsCert, tlsKey }) {
+export function networkAccess(config, library, { address, tlsCert, tlsKey, interfaces = networkAddresses }) {
   const everywhere = address === '0.0.0.0' || address === '::';
-  const addresses = everywhere ? networkAddresses() : [address];
-  const tls = tlsCert
-    ? loadCertificates(tlsCert, tlsKey)
-    : ensureCertificates(path.join(config.dataDir, 'tls'), ['localhost', os.hostname(), ...addresses]);
-  // A brought certificate is only valid for its own names; ours covers the addresses.
-  const hosts = tls.ca ? addresses : tls.names.filter((n) => !n.startsWith('*'));
+  const certify = (list) => ensureCertificates(path.join(config.dataDir, 'tls'), ['localhost', os.hostname(), ...list]);
+  let addresses = everywhere ? interfaces() : [address];
+  let tls = tlsCert ? loadCertificates(tlsCert, tlsKey) : certify(addresses);
   const network = {
     pairing: new Pairing(library),
-    tls,
+    get tls() { return tls; },
+    everywhere,
     port: null,
     info: () => ({
-      urls: hosts.map((h) => `https://${h.includes(':') ? `[${h}]` : h}:${network.port}`),
+      // A brought certificate is only valid for its own names; ours covers the addresses.
+      urls: (tls.ca ? addresses : tls.names.filter((n) => !n.startsWith('*')))
+        .map((h) => `https://${h.includes(':') ? `[${h}]` : h}:${network.port}`),
       fingerprint: tls.fingerprint,
     }),
+    /**
+     * After this computer's addresses changed (the Wi-Fi router gave it another one, say): our
+     * certificate for the new ones, from the same CA, so paired phones still trust it. True if
+     * the certificate changed.
+     */
+    refresh() {
+      if (!everywhere || tlsCert) return false;
+      const now = interfaces();
+      if (now.join() === addresses.join()) return false;
+      addresses = now;
+      const before = tls.cert;
+      tls = certify(addresses);
+      return tls.cert !== before;
+    },
   };
   return network;
 }

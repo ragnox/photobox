@@ -198,6 +198,7 @@ test('the web app deletes a selection in one request, given a list of photo ids'
   assert.equal(res.status, 200, res.raw);
   assert.deepEqual(res.json.deleted, ids.slice(0, 2));
   assert.equal(typeof res.json.version, 'number');
+  assert.equal((await local('GET', '/api/status')).json.activity.recent[0].text, 'Deleted 2 photos', 'and the activity log says so');
   assert.equal(trash.trashed.length, 2);
   assert.deepEqual((await local('GET', '/api/timeline')).json.items.map((i) => i.id), [ids[2]]);
 });

@@ -17,10 +17,6 @@
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M7 22l6-7 4 5 3-3 5 5z" fill="white"/><circle cx="21" cy="11" r="3" fill="white"/></svg>
       <span>Photobox</span>
     </a>
-    <div class="status" id="status" hidden>
-      <div class="status-text" id="status-text"></div>
-      <div class="status-bar"><div id="status-fill"></div></div>
-    </div>
     <div class="spacer"></div>
     <button class="btn primary" id="add-btn"><span data-icon="plus"></span><span class="label">Add folder</span></button>
   </header>
@@ -65,6 +61,23 @@
     <section class="deleted-view" id="deleted-view" hidden></section>
   </main>
   <nav class="scrubber" id="scrubber" aria-label="Jump to year"></nav>
+  <footer class="activity-bar" id="activity-bar" hidden>
+    <button class="activity-toggle" id="activity-toggle" aria-expanded="false" aria-controls="activity-panel" title="Show what Photobox did">
+      <span class="activity-dot" aria-hidden="true"></span>
+      <span class="activity-text" id="activity-text" aria-live="polite"></span>
+      <span class="activity-meter" id="activity-meter" hidden><span id="activity-fill"></span></span>
+      <span class="activity-more" id="activity-more"></span>
+      <time class="activity-time" id="activity-time"></time>
+    </button>
+  </footer>
+  <section class="activity-panel" id="activity-panel" aria-label="Activity" hidden>
+    <div id="activity-now-section" hidden>
+      <h3>Now</h3>
+      <ul class="activity-list" id="activity-now"></ul>
+    </div>
+    <h3>Recent</h3>
+    <ol class="activity-list" id="activity-log"></ol>
+  </section>
   <button class="new-pill" id="new-pill" hidden>New photos · refresh</button>
   <div class="toast" id="toast" role="status" hidden></div>
   <div class="ctx-menu" id="ctx-menu" role="menu" aria-label="Photo" hidden></div>

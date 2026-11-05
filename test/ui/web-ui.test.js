@@ -14,6 +14,7 @@ import { Indexer } from '../../src/indexer.js';
 import { exportLibrary } from '../../src/export.js';
 import { createApp } from '../../src/server.js';
 import { Deletions } from '../../src/deletions.js';
+import { Activity } from '../../src/activity.js';
 import { openPage } from './page.js';
 
 const [W, H] = [480, 360];
@@ -92,12 +93,13 @@ before(async () => {
     trashed.push(file);
   } });
   const watcher = { watchSource() {}, async unwatch() {} };
-  const server = http.createServer(createApp({ library, indexer, watcher, config, deletions, reveal: async (file) => revealed.push(file) }));
+  const activity = new Activity(null);
+  const server = http.createServer(createApp({ library, indexer, watcher, config, deletions, activity, reveal: async (file) => revealed.push(file) }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const screenshots = process.env.PHOTOBOX_UI_SCREENSHOTS ? path.resolve(process.env.PHOTOBOX_UI_SCREENSHOTS) : null;
   if (screenshots) await fs.mkdir(screenshots, { recursive: true });
   const page = await openPage({ profile: path.join(tmp, 'electron'), screenshots });
-  Object.assign(ctx, { tmp, config, library, server, page, a, b, best, older: best.versions[0], img2: byName('IMG_2.jpg'), img3: byName('IMG_3.jpg'), revealed, deletions, trashed });
+  Object.assign(ctx, { tmp, config, library, server, page, activity, a, b, best, older: best.versions[0], img2: byName('IMG_2.jpg'), img3: byName('IMG_3.jpg'), revealed, deletions, trashed });
 
   await page.load(`http://localhost:${server.address().port}/`);
   // A stand-in clipboard that records what would be copied, so the test never touches yours.
@@ -396,6 +398,34 @@ test('photos are selected by their check mark, ⌘- and Shift-click or their day
   assert.ok(trashed.length > before);
   assert.deepEqual(library.timeline({}).items.map((i) => i.id), [firstDay[1]]);
   await page.waitFor(() => document.querySelector('#deleted-count').textContent === '2', null, 'two on the Deleted list');
+});
+
+test('the status bar shows what Photobox is doing, and clicking it shows what it did', async () => {
+  const { page, activity } = ctx;
+  await home();
+  activity.add('Received 3 photos from Test phone');
+  activity.add('Test phone backed up: nothing new');
+  activity.add('Test phone backed up: nothing new');
+  activity.start('ext:ssd', 'Copying to the backup drive', { done: 1, total: 4 });
+  await page.waitFor(() => document.querySelector('#activity-text').textContent === 'Copying to the backup drive', null, 'the copy in the status bar');
+  assert.equal(await page.evaluate(() => document.querySelector('#activity-bar').classList.contains('busy')), true);
+  assert.equal(await page.evaluate(() => document.querySelector('#activity-fill').style.width), '25%');
+
+  await page.click('#activity-toggle');
+  await page.waitFor(() => !document.querySelector('#activity-panel').hidden, null, 'the activity log');
+  assert.deepEqual(await texts('#activity-now .what'), ['Copying to the backup drive']);
+  const log = await texts('#activity-log .what');
+  assert.match(log[0], /^Test phone backed up: nothing new · 2 times since \d/);
+  assert.equal(log[1], 'Received 3 photos from Test phone');
+
+  activity.end('ext:ssd', 'The backup drive is not plugged in', { failed: true });
+  await page.waitFor(() => document.querySelector('#activity-text').textContent === 'The backup drive is not plugged in', null, 'how it went');
+  assert.deepEqual(await page.evaluate(() => ['busy', 'failed'].map((c) => document.querySelector('#activity-bar').classList.contains(c))), [false, true]);
+  assert.match(await page.evaluate(() => document.querySelector('#activity-time').textContent), /\d/);
+  assert.deepEqual(await texts('#activity-log .failed .what'), ['The backup drive is not plugged in']);
+  assert.equal(await page.evaluate(() => document.querySelector('#activity-now-section').hidden), true, 'nothing going on now');
+  await page.key('Escape');
+  await page.waitFor(() => document.querySelector('#activity-panel').hidden, null, 'the log closed');
 });
 
 test('nothing went wrong in the page', () => {

@@ -140,7 +140,10 @@ class HostApiTest {
             val connection = HostApi.pair(payload, "Kotlin integration test")
             val api = HostApi(connection)
             assertEquals(1, api.capabilities().version)
-            val bytes = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=") + ByteArray(200_000) { (it % 251).toByte() }
+            // Busy for a while (scanning the phone's photos, hashing a video): the host closed the idle connection meanwhile.
+            delay(6_000)
+            assertEquals(1, api.capabilities().version)
+            val bytes =Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=") + ByteArray(200_000) { (it % 251).toByte() }
             val hash = sha256(bytes)
             val location = api.create("original.png", bytes.size.toLong(), hash, "2024-01-01T12:00:00Z", "images/1")
             assertEquals(50_000L, api.chunk(location, 0, bytes.copyOfRange(0, 50_000)))
@@ -179,6 +182,54 @@ class HostApiTest {
         } finally {
             process.destroy()
             withContext(Dispatchers.IO) { if (!process.waitFor(10, TimeUnit.SECONDS)) process.destroyForcibly() }
+        }
+    }
+
+    private val capabilities = """{"version":1,"tusVersion":"1.0.0","maxFileBytes":100,"extensions":[".jpg"]}"""
+    private fun nowhere() = "https://localhost:${java.net.ServerSocket(0).use { it.localPort }}/"
+
+    @Test fun `a host that got another address is found where the network says it is now`() = runBlocking<Unit> {
+        Host().use { host ->
+            host.server.enqueue(MockResponse().setBody(capabilities))
+            val paired = host.connection().copy(server = nowhere())
+            val reached = reach(paired) { listOf("not a url", paired.server, host.server.url("/").toString()) }
+            assertEquals(host.server.url("/").toString(), reached.connection.server)
+            assertEquals(paired.copy(server = reached.connection.server), reached.connection, "same pairing, new address")
+            assertEquals(1, reached.capabilities.version)
+            assertEquals("Bearer ${paired.token}", host.server.takeRequest().getHeader("Authorization"))
+        }
+    }
+
+    @Test fun `another host on the network is never used, and never sees the device token`() = runBlocking<Unit> {
+        Host().use { paired -> Host().use { stranger ->
+            val connection = paired.connection().copy(server = nowhere())
+            assertFailsWith<java.net.ConnectException> { reach(connection) { listOf(stranger.server.url("/").toString()) } }
+            assertEquals(0, stranger.server.requestCount)
+        } }
+    }
+
+    @Test fun `a host that answers at its address is not looked for elsewhere`() = runBlocking<Unit> {
+        Host().use { host ->
+            host.server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
+            var looked = false
+            assertEquals(401, assertFailsWith<HostException> { reach(host.connection()) { looked = true; emptyList() } }.status)
+            assertFalse(looked)
+            host.server.enqueue(MockResponse().setBody(capabilities))
+            assertEquals(host.connection(), reach(host.connection()) { looked = true; emptyList() }.connection)
+            assertFalse(looked)
+        }
+    }
+
+    @Test fun `an upload begun at the host's earlier address goes on at its new one, and nothing else moves`() {
+        Host().use { host ->
+            val now = host.server.url("/").toString()
+            val api = HostApi(host.connection())
+            val moved = movedUpload("https://192.0.2.10:4568/api/uploads/$uploadId", now)
+            assertEquals(host.server.url("/api/uploads/$uploadId").toString(), api.uploadUrl(moved))
+            for (other in listOf("https://192.0.2.10:4568/api/pair", "https://192.0.2.10:4568/api/uploads/$uploadId?token=secret", "not a url")) {
+                assertEquals(other, movedUpload(other, now))
+                assertFailsWith<Exception> { api.uploadUrl(movedUpload(other, now)) }
+            }
         }
     }
 }

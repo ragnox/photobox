@@ -604,19 +604,69 @@ function renameSource(row, source) {
   input.addEventListener('blur', () => finish(true));
 }
 
-function renderStatus({ indexing }) {
-  const el = $('#status');
-  el.hidden = !indexing.running;
+function renderStatus({ indexing, activity }) {
   // Dock/taskbar progress: >1 is indeterminate, <0 hides it.
   desktop?.setProgress(indexing.running ? (indexing.total ? indexing.done / indexing.total : 2) : -1);
-  if (!indexing.running) return;
+  // A phone's browser isn't told what the computer does, only what it imports.
+  renderActivity(activity ?? (indexing.running ? { now: [{ text: importingText(indexing), done: indexing.done, total: indexing.total }], recent: [] } : null));
+}
+
+function importingText(indexing) {
   const name = indexing.source?.split('/').filter(Boolean).at(-1) ?? '';
   const progress = `${indexing.done.toLocaleString()} of ${indexing.total.toLocaleString()}`;
-  $('#status-text').textContent = indexing.phase === 'scanning' ? `Scanning ${name}…`
+  return indexing.phase === 'scanning' ? `Looking for new photos in ${name}`
     : indexing.phase === 'comparing' ? `Looking for versions of the same photo · ${progress}`
-    : `Importing ${name} · ${progress}`;
-  $('#status-fill').style.width = indexing.total ? `${(100 * indexing.done) / indexing.total}%` : '4%';
+    : `Importing from ${name} · ${progress}`;
 }
+
+// --- the status bar: what Photobox is doing, and a log of what it did ------
+
+function activityTime(at) {
+  const d = new Date(at);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${time}`;
+}
+
+const meter = (item) => item.total ? `<span class="activity-meter"><span style="width:${Math.min(100, (100 * item.done) / item.total)}%"></span></span>` : '';
+
+function renderActivity(activity) {
+  state.activity = activity;
+  const bar = $('#activity-bar');
+  bar.hidden = !activity;
+  document.body.classList.toggle('has-activity', Boolean(activity));
+  if (!activity) return showActivityLog(false);
+  const [current, ...others] = activity.now;
+  const last = activity.recent[0];
+  bar.classList.toggle('busy', Boolean(current));
+  bar.classList.toggle('failed', !current && Boolean(last?.failed));
+  $('#activity-text').textContent = current?.text ?? last?.text ?? 'Nothing has happened yet';
+  $('#activity-more').textContent = others.length ? `and ${others.length} more` : '';
+  $('#activity-time').textContent = !current && last ? activityTime(last.at) : '';
+  $('#activity-meter').hidden = !current?.total;
+  if (current?.total) $('#activity-fill').style.width = `${Math.min(100, (100 * current.done) / current.total)}%`;
+  if (!$('#activity-panel').hidden) renderActivityLog();
+}
+
+function renderActivityLog() {
+  const { now, recent } = state.activity;
+  $('#activity-now-section').hidden = !now.length;
+  $('#activity-now').innerHTML = now.map((item) => `<li><span class="what">${esc(item.text)}</span>${meter(item)}</li>`).join('');
+  $('#activity-log').innerHTML = recent.length
+    ? recent.map((e) => `<li class="${e.failed ? 'failed' : ''}"><time>${activityTime(e.at)}</time><span class="what">${esc(e.text)}` +
+      `${e.times > 1 ? ` <span class="times">· ${e.times} times since ${activityTime(e.since)}</span>` : ''}</span></li>`).join('')
+    : '<li class="muted">Nothing yet</li>';
+}
+
+function showActivityLog(open = $('#activity-panel').hidden) {
+  open &&= Boolean(state.activity);
+  $('#activity-panel').hidden = !open;
+  $('#activity-toggle').setAttribute('aria-expanded', open);
+  if (open) { renderActivityLog(); poll(); }
+}
+$('#activity-toggle').addEventListener('click', () => showActivityLog());
+document.addEventListener('pointerdown', (e) => {
+  if (!$('#activity-panel').hidden && !e.target.closest('#activity-panel, #activity-bar')) showActivityLog(false);
+});
 
 function renderStats(stats) {
   $('#stats').textContent = `${stats.photos.toLocaleString()} photos · ${stats.videos.toLocaleString()} videos` +
@@ -693,7 +743,8 @@ async function poll() {
   } catch {
     // server restarting; try again shortly
   }
-  pollTimer = setTimeout(poll, state.running ? 1500 : 5000);
+  const watching = state.running || state.activity?.now.length || !$('#activity-panel').hidden;
+  pollTimer = setTimeout(poll, watching ? 1500 : 5000);
 }
 function reload() {
   lastReload = Date.now();
@@ -1423,6 +1474,11 @@ addEventListener('contextmenu', async (e) => {
 addEventListener('keydown', (e) => {
   // A dialog over the viewer (deleting) gets its own keys: Esc closes it, not the photo.
   if (askDialog.open) return;
+  if (e.key === 'Escape' && !$('#activity-panel').hidden) {
+    showActivityLog(false);
+    e.preventDefault();
+    return;
+  }
   // With photos selected in the timeline: Esc deselects them, ⌫ or Delete deletes them (after asking).
   if (lightbox.hidden && selecting() && !document.querySelector('dialog[open]') && !e.target.closest?.('input, textarea, [contenteditable]')) {
     if (e.key === 'Escape') clearSelection();

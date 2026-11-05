@@ -17,7 +17,7 @@ client has no cleanup/delete implementation.
 | Full photo/video/location permissions | All selected local originals discovered, original GPS retained | Partial: synthetic JPEG discovered/read with exact bytes and GPS; video-format cases remain pending |
 | Android 14+ selected-photo access | UI reports limited scope; only authorized items enumerated | Pending |
 | Permission revoked during hash/upload | Item stays unverified, clear error; granting permission allows retry | Pending |
-| Charging/unmetered/battery constraints | Job waits for configured conditions; Pause prevents new chunks/work | Pending |
+| Charging/unmetered/battery constraints | Job waits for configured conditions; Pause prevents new chunks/work | Partial: restricted standby bucket stopped all runs for ten days; after **Allow backup in the background**, periodic runs went on while the phone dozed |
 | Mixed 10 GB first backup | Every exported item has phone/host full SHA-256 equality | Pending |
 | Pixel motion JPEG, Ultra HDR JPEG, HEIC, DNG, HEVC/HDR video | Byte-identical originals, no metadata stripping/transcoding | JPEG EXIF/GPS and appended opaque payload passed; specific motion/HDR/RAW/video formats pending |
 | Airplane mode mid-video | Same upload resumes from server HEAD offset without restarting at zero | Pending |
@@ -28,7 +28,7 @@ client has no cleanup/delete implementation.
 | Device revoked/re-paired during transfer | Old worker cannot reinstate old-session proof; new pair rechecks/reuploads | Pending |
 | Android 15+ daily dataSync limit / Android 16 job quota | Interrupted work remains resumable; no false verification | Pending |
 | Android 17 background foreground-service restriction | Foreground-start denial cannot block bounded reconciliation | Failure observed and fixed; physical transfer/receipt smoke passes, with four policy regression tests |
-| VPN / network change | Reachable pinned address works; wrong address/certificate fails closed | LAN Wi-Fi passed; VPN/network transition pending |
+| VPN / network change | Reachable pinned address works; wrong address/certificate fails closed | LAN Wi-Fi passed; the computer's new DHCP address found by DNS-SD and saved (2026-11-05); VPN transition pending |
 
 ## Pixel 10 Pro smoke run — 2026-10-26
 
@@ -69,6 +69,34 @@ client has no cleanup/delete implementation.
 - **Restoration:** the controlled transfer used only the dedicated fixture folder.
   The phone's original selected-folder list and unpaused state were then restored;
   the host remains configured for automatic export. No phone originals were deleted.
+
+## Pixel 10 Pro, address change and background restriction — 2026-11-05
+
+- **Device / APK:** Pixel 10 Pro, Android 17. Debug APK `0.1.0` / version code 1 from the
+  working tree, installed over the 2026-10-26 build with `adb install -r` (same debug key;
+  pairing and the Room queue were kept).
+- **Before:** no backup had completed since 2026-10-26. The computer's DHCP address had changed
+  twice since pairing, so every run failed to connect to the saved address and retried with
+  WorkManager backoff, which had reached its 5-hour cap. Android had also moved the app to the
+  restricted standby bucket (not opened for over a week), which defers jobs to charging + idle.
+- **Address:** the host now announces `_photobox._tcp` (Bonjour) and renews its leaf certificate
+  for new addresses while running. On the first run after the update the app failed to connect,
+  discovered the host, passed TLS with the paired CA and saved the new address, about 3 s after
+  the run started.
+- **Fixes found on the device:** (1) an idle pooled connection the host had closed after its 5 s
+  keep-alive was reused after the ~25 s media scan, failing with "unexpected end of stream";
+  reproduced against the real Node host in a JVM test and fixed by evicting idle connections
+  after 4 s. (2) A resumable upload begun at the old address was refused as another host's;
+  its location is now moved to the current address. (3) Opening the app now replaces a
+  backed-off run instead of keeping it.
+- **Background:** after the user allowed background use from the app, the app is on the
+  battery-optimization allowlist (bucket exempted) and periodic runs went on while the phone was
+  dozing. Host-side receipt re-verification of earlier uploads progressed about 100 items per
+  run (206 → 606 export-verified of 1,312).
+- **Uploads:** 89 new camera photos and screenshots reached the host inbox in the first runs.
+  Compared with the camera folder another sync tool delivers to the computer, the only camera
+  items missing from the app's uploads were the two with old upload sessions (pending retry)
+  and one 0-byte video, which the app excludes by design.
 
 ## Record
 

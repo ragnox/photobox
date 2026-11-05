@@ -81,8 +81,17 @@ unverified connection. CA-backed leaf renewal works without re-pairing; a pinned
 user-supplied leaf must be paired again when that certificate changes. The host
 private key is never part of a QR or response.
 
-The saved address must remain reachable. If it changes, pair again using a current
-LAN/VPN address; a stable VPN address is useful when switching networks.
+When nothing answers at the saved address (the Wi-Fi router gave the computer another
+one), the app looks for the hosts the local network announces (DNS-SD `_photobox._tcp`,
+see the host's README) and tries each with the paired trust anchor and token. Only the
+paired host passes TLS, so another one never sees the token. The address that answered
+is saved for next time. Away from that network, use a stable VPN address; a run that
+reaches no host records the error and the next periodic run tries again, without
+backing off for hours.
+
+Android stops background work of apps that haven't been opened for a while (the
+restricted standby bucket). **Allow backup in the background** in the app asks Android
+to exempt Photobox from battery optimization, so backups keep running.
 
 Device tokens and trust settings are persisted as AES-GCM ciphertext with a key
 held by Android Keystore. Android backup of the app's data is disabled. Forgetting

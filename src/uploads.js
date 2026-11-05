@@ -255,7 +255,7 @@ export class Uploads {
       await syncDirectory(this.config.uploadsDir);
       await syncDirectory(this.config.dataDir);
       this.library.q("UPDATE backup_uploads SET state = 'received', received_at = ? WHERE id = ?").run(Date.now(), row.id);
-      this.onReceived?.();
+      this.onReceived?.(row);
       return true;
     } finally { this.transfers.delete(row.id); }
   }

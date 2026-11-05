@@ -10,6 +10,8 @@ import { Indexer } from './indexer.js';
 import { SourceWatcher } from './watcher.js';
 import { createApp } from './server.js';
 import { networkAccess } from './remote.js';
+import { announce } from './announce.js';
+import { Activity, count, nameOfSource, tilde } from './activity.js';
 import { Uploads } from './uploads.js';
 import { BackupQueue } from './backup.js';
 import { Deletions } from './deletions.js';
@@ -23,6 +25,7 @@ export class AlreadyRunning extends Error {
 }
 
 const lockPath = (config) => path.join(config.libraryDir, 'instance.json');
+const RENEW_MS = 30_000; // how soon a new address of this computer gets into its certificate
 
 function alive(pid) {
   try {
@@ -69,6 +72,30 @@ export async function scanAll(library, indexer, onScanned = () => {}) {
   for (const source of library.sources()) onScanned(source, await indexer.scanSource(source));
 }
 
+/** What the indexer and phone backups did, for the activity log (see activity.js). */
+function reportActivity(activity, { library, indexer, uploads, backup }) {
+  let lastScan = indexer.status.lastScan;
+  indexer.on('status', (s) => {
+    if (!s.lastScan || s.lastScan === lastScan) return;
+    lastScan = s.lastScan;
+    const name = nameOfSource(library, s.lastScan.source);
+    const errors = s.errors.filter((e) => e.at >= Date.now() - s.lastScan.ms - 1000).length;
+    if (s.lastScan.added) activity.add(`Imported ${count(s.lastScan.added, 'new photo')} from ${name}`);
+    if (errors) activity.add(`Couldn't read ${count(errors, 'file')} in ${name}`, { failed: true });
+  });
+  const queued = uploads.onReceived;
+  uploads.onReceived = (row) => {
+    queued?.(row);
+    const device = library.devices().find((d) => d.id === row.device_id);
+    if (device) activity.phone(device, true);
+  };
+  backup.onRun = ({ copied, error, destination }) => {
+    const where = destination ? tilde(destination) : 'the export folder';
+    if (copied) activity.add(`Exported ${count(copied, 'phone photo')} into ${where}`);
+    if (error) activity.add(`Phone photos couldn't be exported into ${where}: ${error}`, { failed: true });
+  };
+}
+
 /**
  * Start a library server. Two processes indexing one library would fight over
  * it, so this throws AlreadyRunning (with the other instance's URL) instead.
@@ -89,6 +116,8 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
   const uploads = new Uploads(library, config);
   const backup = new BackupQueue(library, indexer, uploads, config);
   const deletions = new Deletions(library, indexer, config, { uploads, trash });
+  const activity = new Activity(path.join(config.libraryDir, 'activity.json'));
+  reportActivity(activity, { library, indexer, uploads, backup });
   const hostControl = {
     info: () => ({ pid: process.pid, dataDir: config.dataDir, archive: config.archive?.root ?? null, managedBy, port: config.port,
       listen: address, remotePort: network?.port ?? null, backupDir: config.backupDir }),
@@ -107,19 +136,29 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
     },
     async shutdown() { await close(); },
   };
-  const deps = { library, indexer, watcher, config, network, uploads, backup, deletions, hostControl };
+  const deps = { library, indexer, watcher, config, network, uploads, backup, deletions, hostControl, activity };
   const servers = [];
+  let renew = null;
+  let announced = null;
   try {
     servers.push(await listen(http.createServer(createApp(deps)), config.port, config.host));
     if (network) {
       const remote = https.createServer({ key: network.tls.key, cert: network.tls.cert }, createApp(deps, { remote: true }));
       servers.push(await listen(remote, remotePort != null ? Number(remotePort) : config.port ? config.port + 1 : 0, address));
       network.port = remote.address().port;
+      // Paired phones reach this computer at whatever address it has now.
+      renew = setInterval(() => {
+        try { if (network.refresh()) remote.setSecureContext({ key: network.tls.key, cert: network.tls.cert }); }
+        catch (err) { console.error(`Could not renew the certificate for this computer's new address: ${err.message}`); }
+      }, RENEW_MS).unref();
+      if (network.everywhere) announced = announce(network.port);
     }
     // The archive too, so the desktop app opens the library the host last served.
     saveHostSettings(config.dataDir, { port: config.port, listen: address, remotePort: remotePort ?? null, backupDir: config.backupDir, archive: config.archive?.root ?? null,
       tlsCert: tlsCert ? path.resolve(tlsCert) : null, tlsKey: tlsKey ? path.resolve(tlsKey) : null });
   } catch (err) {
+    clearInterval(renew);
+    announced?.close();
     for (const s of servers) s.close();
     await deletions.close();
     await backup.close();
@@ -139,6 +178,8 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
   async function close() {
     if (closed) return;
     closed = true;
+    clearInterval(renew);
+    announced?.close();
     for (const s of servers) {
       s.closeAllConnections();
       s.close();
@@ -148,6 +189,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
     await backup.close();
     await uploads.close();
     await indexer.queue;
+    activity.close();
     if (runningInstance(config) === null) fs.rmSync(lockPath(config), { force: true });
     library.close();
   }

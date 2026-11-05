@@ -14,6 +14,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 
 val protocolJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -58,6 +59,9 @@ data class TrustAnchor(val kind: String, val sha256: String, val certificate: St
             .sslSocketFactory(ssl.socketFactory, manager)
             // Keep OkHttp's hostname verification. Never use a trust-all verifier.
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+            // The host closes a connection that was idle for 5 s, and with retries off (an upload is
+            // never sent twice) reusing one it closed fails the request: idle ones go after 4 s.
+            .connectionPool(ConnectionPool(5, 4, java.util.concurrent.TimeUnit.SECONDS))
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
