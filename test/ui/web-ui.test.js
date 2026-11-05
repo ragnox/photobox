@@ -226,7 +226,7 @@ test('right-clicking a photo offers to copy it, show it in Finder or show its in
   const copies = await page.evaluate(() => window.copied.length);
   await page.rightClick(`.tile[data-id="${best.id}"]`);
   await open();
-  assert.deepEqual(await menu(), ['Copy Photo', ...finder, 'Get Info', 'Delete…']);
+  assert.deepEqual(await menu(), ['Copy Photo', ...finder, 'Get Info', 'Select', 'Delete…']);
   await page.click('#ctx-menu [data-action="copy"]');
   await page.waitFor((n) => window.copied.length === n + 1 && document.querySelector('#ctx-menu').hidden, copies, 'the copy');
 
@@ -261,6 +261,7 @@ test('in the desktop app the menu is a native one, and what was picked in it is 
       { id: 'copy', label: 'Copy Photo', keys: null },
       { id: 'reveal', label: finderLabel, keys: null },
       { id: 'info', label: 'Get Info', keys: null },
+      { id: 'select', label: 'Select', keys: null },
       { id: 'delete', label: 'Delete…', keys: null, separator: true },
     ]]);
     assert.deepEqual(page.desktop.revealed, [path.join(config.backupDir, '2024/03/PXL_1.jpg')]);
@@ -330,6 +331,71 @@ test('deleting a photo asks first, takes it out of the timeline and lists its fi
   await page.click('#ask-ok');
   await page.waitFor(() => document.querySelector('#deleted-view').textContent.includes('Nothing deleted') && document.querySelector('#deleted-count').textContent === '', null, 'an empty list');
   assert.deepEqual(ctx.deletions.list(), []);
+});
+
+test('photos are selected by their check mark, ⌘- and Shift-click or their day, and deleted together', async () => {
+  const { page, library, trashed } = ctx;
+  await home();
+  const ids = await page.evaluate(() => [...document.querySelectorAll('.tile')].map((t) => Number(t.dataset.id)));
+  const firstDay = await page.evaluate(() => [...document.querySelector('.day').querySelectorAll('.tile')].map((t) => Number(t.dataset.id)));
+  const selected = () => page.evaluate(() => [...document.querySelectorAll('.tile.selected')].map((t) => Number(t.dataset.id)));
+  assert.equal(ids.length, 3);
+  assert.equal(firstDay.length, 2);
+
+  // The check mark selects a photo; while one is, a click selects instead of opening.
+  await page.click(`.tile[data-id="${ids[0]}"] .pick`);
+  await page.waitFor(() => !document.querySelector('#select-bar').hidden, null, 'the selection bar');
+  await page.click(`.tile[data-id="${ids[2]}"]`);
+  assert.equal(await page.text('#select-count'), '2 selected');
+  assert.ok(await page.evaluate(() => document.querySelector('#lightbox').hidden), 'no photo opened');
+  await page.key('Escape');
+  await page.waitFor(() => document.querySelector('#select-bar').hidden, null, 'nothing selected');
+  assert.deepEqual(await selected(), []);
+
+  // ⌘-click starts a selection, Shift-click selects up to the photo, a day's check (de)selects the day.
+  await page.click(`.tile[data-id="${ids[0]}"]`, 'left', ['meta']);
+  await page.click(`.tile[data-id="${ids[2]}"]`, 'left', ['shift']);
+  assert.deepEqual(await selected(), ids);
+  await page.click('.day-pick');
+  assert.deepEqual(await selected(), ids.filter((id) => !firstDay.includes(id)));
+  await page.click('.day-pick');
+  assert.deepEqual(await selected(), ids);
+  await page.click(`.tile[data-id="${firstDay[1]}"]`);
+  const doomed = ids.filter((id) => id !== firstDay[1]);
+  assert.deepEqual(await selected(), doomed);
+
+  // Right-click on a selected photo is about the selection.
+  await page.rightClick(`.tile[data-id="${doomed[0]}"]`);
+  await page.waitFor(() => !document.querySelector('#ctx-menu').hidden, null, 'the menu');
+  const items = await texts('#ctx-menu button');
+  assert.equal(items[0], 'Deselect');
+  assert.match(items[1], /^Delete 2 Photos…/);
+  await page.key('Escape');
+  await page.waitFor(() => document.querySelector('#ctx-menu').hidden, null, 'the menu gone');
+  assert.deepEqual(await selected(), doomed, 'Esc closed the menu, the photos stay selected');
+
+  // ⌫ asks first; Cancel leaves everything as it was.
+  const before = trashed.length;
+  await page.key('Backspace');
+  await page.waitFor(() => document.querySelector('#ask-dialog').open, null, 'the question');
+  assert.equal(await page.text('#ask-title'), 'Delete 2 photos from all devices?');
+  assert.match(await page.text('#ask-body'), /^2 photos, taken between .* and .*\. Their files on this computer go to the Trash/);
+  await page.click('#ask-cancel');
+  await page.waitFor(() => !document.querySelector('#ask-dialog').open, null, 'the question gone');
+  assert.equal(trashed.length, before);
+  assert.deepEqual(await selected(), doomed);
+
+  // The bar's Delete deletes them in one go.
+  await page.click('#select-delete');
+  await page.waitFor(() => document.querySelector('#ask-dialog').open, null, 'the question');
+  assert.equal(await page.text('#ask-ok'), 'Delete 2');
+  await page.click('#ask-ok');
+  await page.waitFor(() => document.querySelector('#toast').textContent === 'Deleted 2 photos', null, 'the toast');
+  assert.deepEqual(await tiles(), [firstDay[1]]);
+  assert.ok(await page.evaluate(() => document.querySelector('#select-bar').hidden && !document.body.classList.contains('selecting')));
+  assert.ok(trashed.length > before);
+  assert.deepEqual(library.timeline({}).items.map((i) => i.id), [firstDay[1]]);
+  await page.waitFor(() => document.querySelector('#deleted-count').textContent === '2', null, 'two on the Deleted list');
 });
 
 test('nothing went wrong in the page', () => {

@@ -76,6 +76,52 @@ export class Deletions {
    * their folder (an unplugged drive) or couldn't be moved to the Trash yet. Null if there's no such photo.
    */
   async delete(id) {
+    const forgotten = await this.#forget(id);
+    if (!forgotten) return null;
+    this.indexer.changed();
+    await this.sweep();
+    return { files: forgotten.files, waiting: this.#waiting(forgotten.contents) };
+  }
+
+  /**
+   * Delete several photos as delete() does, then move all their files to the Trash in one go.
+   * Returns { deleted, gone, failed, files, waiting }: the ids deleted now, the ids that were gone
+   * already, and [{ id, error }] for photos Photobox can't delete yet; files and waiting as delete().
+   */
+  async deleteMany(list) {
+    const done = { deleted: [], gone: [], failed: [], files: 0 };
+    const contents = [];
+    try {
+      for (const id of new Set(list)) {
+        try {
+          const forgotten = await this.#forget(id);
+          if (!forgotten) done.gone.push(id);
+          else {
+            done.deleted.push(id);
+            done.files += forgotten.files;
+            contents.push(...forgotten.contents);
+          }
+        } catch (err) {
+          if (!err.expose) throw err;
+          done.failed.push({ id, error: err.message });
+        }
+      }
+    } finally {
+      if (done.deleted.length) {
+        this.indexer.changed();
+        await this.sweep();
+      }
+    }
+    return { ...done, waiting: this.#waiting(contents) };
+  }
+
+  /** How many files of these contents wait for their folder, or to be moved to the Trash. */
+  #waiting(contents) {
+    return this.library.q(`SELECT count(*) AS n FROM deleted_files WHERE state = 'pending' AND sha256 IN (SELECT value FROM json_each(?))`).get(ids(contents)).n;
+  }
+
+  /** Take the photo `id` out of the library and put every copy of it on the Deleted list. Returns { files, contents }, or null. */
+  async #forget(id) {
     let shown = this.library.media(id);
     if (!shown) return null;
     // A version or a live photo's clip stands for the photo that is shown.
@@ -158,10 +204,7 @@ export class Deletions {
       await fs.rm(thumbPath(this.config, m.hash), { force: true });
       await fs.rm(previewPath(this.config, m.hash), { force: true });
     }
-    this.indexer.changed();
-    await this.sweep();
-    const waiting = this.library.q(`SELECT count(*) AS n FROM deleted_files WHERE state = 'pending' AND sha256 IN (SELECT value FROM json_each(?))`).get(ids(contents.keys())).n;
-    return { files, waiting };
+    return { files, contents: [...contents.keys()] };
   }
 
   /** Look at pending files soon. */

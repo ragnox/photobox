@@ -71,7 +71,14 @@ It also handles these:
 ## Deleting a photo
 
 Press **⌫** in the viewer, click its trash button, or right-click a photo and choose **Delete…**. Photobox
-asks first, then deletes the photo from all your devices:
+asks first, then deletes the photo from all your devices.
+
+To delete several, select them in the timeline: click a photo's check mark (it shows on hover), ⌘- or
+Ctrl-click it, or choose **Select** in its right-click menu. While photos are selected, a click selects or
+deselects a photo, Shift-click selects every photo up to the one clicked, and the check next to a day selects
+the whole day. Then press **⌫** or click **Delete** in the bar at the top; **Esc** deselects them all.
+
+Deleting does this:
 
 - **On this computer** every copy goes to the Trash: its files in your source folders (a Takeout too),
   the archive's file, the phone backup's original, the copy in the export folder, and its other versions
@@ -335,6 +342,8 @@ it's opened from Finder.
 ## Keyboard (viewer)
 
 `←` `→` browse · `I` info · `F` favorite · `L` play live photo · `⌘C` copy the photo · `⌫` delete · `Esc` close
+
+In the timeline, with photos selected: `⌫` deletes them (after asking) · `Esc` deselects them
 
 Right-clicking a photo, in the timeline or the viewer, offers **Copy Photo** (full size, to paste
 into a mail or a chat), **Show in Finder** (on the computer running Photobox), **Get Info** and **Delete…**.

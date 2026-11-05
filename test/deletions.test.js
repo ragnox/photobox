@@ -154,6 +154,54 @@ test('a copy that turns up again is deleted too, until the photo is cleared from
   assert.throws(() => deletions.clear(['not a fingerprint']), /fingerprints/);
 });
 
+test('several photos are deleted at once; one that can\'t be read yet stays, and one that is gone already is said so', async (t) => {
+  const { tmp, put, library, indexer, trash, deletions, shown } = await setup(t);
+  const one = await put('Folder/IMG_1.jpg', await jpeg(200, 0, 0));
+  const two = await put('Folder/IMG_2.jpg', await jpeg(0, 200, 0));
+  const kept = await put('Folder/IMG_3.jpg', await jpeg(0, 0, 200));
+  const old = await put('Drive/IMG_4.jpg', await jpeg(200, 200, 0));
+  await indexer.scanSource(library.addSource(path.join(tmp, 'Folder')));
+  await indexer.scanSource(library.addSource(path.join(tmp, 'Drive')));
+  const [a, b, k, o] = [one, two, kept, old].map((file) => library.q('SELECT media_id FROM files WHERE path = ?').get(file).media_id);
+  // Indexed before Photobox kept fingerprints, on a drive that's unplugged now.
+  library.q('UPDATE media SET sha256 = NULL WHERE id = ?').run(o);
+  await fs.rename(path.join(tmp, 'Drive'), path.join(tmp, 'Unplugged'));
+
+  const result = await deletions.deleteMany([a, b, o, a, 999_999]);
+  assert.deepEqual({ ...result, failed: result.failed.map((f) => f.id) }, { deleted: [a, b], gone: [999_999], failed: [o], files: 2, waiting: 0 });
+  assert.match(result.failed[0].error, /IMG_4\.jpg.*unplugged/);
+  assert.deepEqual(trash.trashed.map((t) => t.from).sort(), [one, two].sort());
+  assert.ok(shown().includes(k));
+  assert.ok(library.media(o), 'the one it couldn\'t read is still there, to try again');
+  assert.deepEqual(deletions.list().map((p) => p.filename).sort(), ['IMG_1.jpg', 'IMG_2.jpg']);
+});
+
+test('the web app deletes a selection in one request, given a list of photo ids', async (t) => {
+  const tmp = await tmpDir(t);
+  const folder = path.join(tmp, 'Folder');
+  await fs.mkdir(folder);
+  for (const n of [1, 2, 3]) await fs.writeFile(path.join(folder, `IMG_${n}.jpg`), await jpeg(n * 60, 20, 20));
+  const trash = fakeTrash(tmp);
+  let scanned;
+  const done = new Promise((resolve) => (scanned = resolve));
+  const app = await startPhotobox({ dataDir: path.join(tmp, 'data'), port: 0, folders: [folder], backupDir: path.join(tmp, 'Photos'), onScanned: () => scanned(), trash });
+  t.after(() => app.close());
+  await done;
+  const local = (method, route, options) => request(app.url, null, method, route, options);
+  const ids = (await local('GET', '/api/timeline')).json.items.map((i) => i.id);
+  assert.equal(ids.length, 3);
+
+  for (const body of [{}, { ids: [] }, { ids: [String(ids[0])] }, { ids: [-1] }]) {
+    assert.equal((await local('POST', '/api/media/delete', { body })).status, 400, JSON.stringify(body));
+  }
+  const res = await local('POST', '/api/media/delete', { body: { ids: ids.slice(0, 2) } });
+  assert.equal(res.status, 200, res.raw);
+  assert.deepEqual(res.json.deleted, ids.slice(0, 2));
+  assert.equal(typeof res.json.version, 'number');
+  assert.equal(trash.trashed.length, 2);
+  assert.deepEqual((await local('GET', '/api/timeline')).json.items.map((i) => i.id), [ids[2]]);
+});
+
 test('a copy on an unplugged drive waits, and is deleted once the drive is back', async (t) => {
   const { tmp, put, library, indexer, trash, deletions, shown } = await setup(t);
   const bytes = await jpeg(90, 90, 90);

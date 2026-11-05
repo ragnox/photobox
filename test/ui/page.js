@@ -97,7 +97,8 @@ export async function openPage({ profile, screenshots = null, desktop: asDesktop
     return at;
   }
 
-  async function click(selector, button = 'left') {
+  /** A click in the middle of the element, e.g. click('.tile') or click('.tile', 'left', ['shift']). */
+  async function click(selector, button = 'left', modifiers = []) {
     const end = Date.now() + 10_000;
     let at = await target(selector);
     while (at.missing || at.hidden) {
@@ -107,9 +108,9 @@ export async function openPage({ profile, screenshots = null, desktop: asDesktop
     }
     const { x, y } = at;
     await call('input', [
-      { type: 'mouseMove', x, y },
-      { type: 'mouseDown', x, y, button, clickCount: 1 },
-      { type: 'mouseUp', x, y, button, clickCount: 1 },
+      { type: 'mouseMove', x, y, modifiers },
+      { type: 'mouseDown', x, y, button, clickCount: 1, modifiers },
+      { type: 'mouseUp', x, y, button, clickCount: 1, modifiers },
     ]);
   }
 

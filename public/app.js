@@ -144,6 +144,7 @@ function resetTimeline() {
   days.clear();
   tiles.clear();
   timelineEl.replaceChildren();
+  clearSelection();
 }
 
 async function loadOlder() {
@@ -216,7 +217,8 @@ function dayFor(item, atStart) {
     const el = document.createElement('section');
     el.className = 'day';
     const header = document.createElement('h3');
-    header.textContent = fmtDay.format(wallClock(dayKey));
+    const label = fmtDay.format(wallClock(dayKey));
+    header.innerHTML = `<span>${esc(label)}</span><button class="day-pick" data-day="${esc(dayKey)}" aria-label="Select the photos of ${esc(label)}" aria-pressed="false">${icon('check')}</button>`;
     const rows = document.createElement('div');
     el.append(header, rows);
     atStart ? month.days.prepend(el) : month.days.append(el);
@@ -312,14 +314,82 @@ function createTile(item) {
   if (item.kind === 'video') el.insertAdjacentHTML('beforeend', `<span class="badge tr">${item.duration ? fmtDuration(item.duration) : ''}${icon('play')}</span>`);
   else if (item.live) el.insertAdjacentHTML('beforeend', `<span class="badge tr">${icon('live')}</span>`);
   el.insertAdjacentHTML('beforeend', `<span class="badge bl fav" ${item.favorite ? '' : 'hidden'}>${icon('heart')}</span>`);
+  el.insertAdjacentHTML('beforeend', `<span class="pick" aria-hidden="true">${icon('check')}</span>`);
+  if (selected.has(item.id)) el.classList.add('selected');
   tiles.set(item.id, el);
   return el;
 }
 
+// A click opens the photo. Its check mark, ⌘- or Ctrl-click, or any click while photos are
+// selected selects it instead; Shift-click selects every photo up to it. A day's check selects the day.
 timelineEl.addEventListener('click', (e) => {
+  const dayPick = e.target.closest('.day-pick');
+  if (dayPick) {
+    const day = days.get(dayPick.dataset.day);
+    if (day) select(day.items, !day.items.every((i) => selected.has(i.id)));
+    return;
+  }
   const tile = e.target.closest('.tile');
-  if (tile) openLightbox(Number(tile.dataset.id));
+  const item = tile && state.items.find((i) => i.id === Number(tile.dataset.id));
+  if (!item) return;
+  if (e.shiftKey && selecting()) selectRange(item);
+  else if (selecting() || e.shiftKey || e.metaKey || e.ctrlKey || e.target.closest('.pick')) toggleSelected(item);
+  else openLightbox(item.id);
 });
+
+// --- selecting -------------------------------------------------------------------
+
+const selected = new Set(); // ids of the selected photos
+let anchor = null; // the photo a Shift-click selects from
+const selecting = () => selected.size > 0;
+
+/** Select (on) or deselect every photo of `items`. */
+function select(items, on) {
+  const changed = new Set();
+  for (const item of items) {
+    if (on) selected.add(item.id);
+    else selected.delete(item.id);
+    tiles.get(item.id)?.classList.toggle('selected', on);
+    changed.add(item.local_time.slice(0, 10));
+  }
+  for (const key of changed) {
+    const day = days.get(key);
+    const all = Boolean(day?.items.length) && day.items.every((i) => selected.has(i.id));
+    day?.header.classList.toggle('selected', all);
+    day?.header.querySelector('.day-pick')?.setAttribute('aria-pressed', all);
+  }
+  showSelection();
+}
+
+function toggleSelected(item) {
+  select([item], !selected.has(item.id));
+  anchor = item;
+}
+
+/** Select the photos from the last one clicked to `item`, as they're shown. */
+function selectRange(item) {
+  const from = state.items.indexOf(anchor);
+  const to = state.items.indexOf(item);
+  if (from < 0) return toggleSelected(item);
+  select(state.items.slice(Math.min(from, to), Math.max(from, to) + 1), true);
+  anchor = item;
+}
+
+function clearSelection() {
+  select(state.items.filter((i) => selected.has(i.id)), false);
+  selected.clear();
+  anchor = null;
+  showSelection();
+}
+
+function showSelection() {
+  document.body.classList.toggle('selecting', selecting());
+  $('#select-bar').hidden = !selecting();
+  $('#select-count').textContent = selected.size === 1 ? '1 selected' : `${selected.size} selected`;
+}
+
+$('#select-clear').addEventListener('click', clearSelection);
+$('#select-delete').addEventListener('click', () => deleteSelected());
 
 let lastWidth = 0;
 new ResizeObserver(() => {
@@ -610,7 +680,9 @@ async function poll() {
     renderSources(s.sources);
     renderStats(s.stats);
     renderBackup(s.backup);
-    state.canDelete = s.deleted !== null;
+    // A host from before deleting doesn't say: it can't delete.
+    state.canDelete = s.deleted != null;
+    $('#select-delete').hidden = !state.canDelete;
     $('#nav-deleted').hidden = !s.deleted?.photos && state.view !== 'deleted';
     $('#deleted-count').textContent = s.deleted?.photos || '';
     if (state.view === 'deleted') renderDeleted();
@@ -631,7 +703,8 @@ function reload() {
 
 /** New photos arrived: reload when nothing would jump under the user, otherwise offer to. */
 function libraryChanged(final = false) {
-  const atTop = scrollY < 400 && !state.hasNewer && $('#lightbox').hidden;
+  // Not under a selection either: reloading would clear it.
+  const atTop = scrollY < 400 && !state.hasNewer && $('#lightbox').hidden && !selecting();
   if (!state.items.length || atTop) {
     if (final || Date.now() - lastReload > 3000) reload();
   } else {
@@ -1032,6 +1105,8 @@ function removeItem(item) {
   state.items.splice(index, 1);
   tiles.get(item.id)?.remove();
   tiles.delete(item.id);
+  if (selected.delete(item.id)) showSelection();
+  if (anchor?.id === item.id) anchor = null;
   const dayKey = item.local_time.slice(0, 10);
   const day = days.get(dayKey);
   if (day) {
@@ -1055,6 +1130,40 @@ function removeItem(item) {
     }
   }
   updateChrome();
+}
+
+/** Delete the selected photos from all devices, once the user says so. */
+async function deleteSelected() {
+  const items = state.items.filter((i) => selected.has(i.id));
+  if (!items.length || !state.canDelete || askDialog.open) return;
+  if (items.length === 1) return deletePhoto(items[0]);
+  const times = items.map((i) => wallClock(i.local_time)).sort((a, b) => a - b);
+  const [first, last] = [fmtFull.format(times[0]), fmtFull.format(times.at(-1))];
+  const videos = items.filter((i) => i.kind === 'video').length;
+  const what = `${items.length} ${videos === items.length ? 'videos' : videos ? 'photos and videos' : 'photos'}`;
+  const yes = await ask({
+    title: `Delete ${what} from all devices?`,
+    action: `Delete ${items.length}`,
+    body: `<p>${esc(what)}, taken ${first === last ? `on ${esc(first)}` : `between ${esc(first)} and ${esc(last)}`}.</p>
+      <p>Their files on this computer go to the Trash, their other versions too.</p>
+      <p>Phones with Photobox for Android delete their copies too, once you confirm it there.</p>
+      <p class="muted small">Their fingerprints stay on the Deleted list, so a copy that turns up again is deleted too.</p>`,
+  });
+  if (!yes) return;
+  try {
+    const { deleted, gone, failed, waiting, version } = await api('/api/media/delete', { method: 'POST', body: { ids: items.map((i) => i.id) } });
+    lastVersion = version; // our own change - the view is updated right here
+    for (const item of items) if (deleted.includes(item.id) || gone.includes(item.id)) removeItem(item);
+    // What couldn't be deleted stays selected, to try again.
+    toast([
+      `Deleted ${deleted.length === 1 ? '1 photo' : `${deleted.length} photos`}`,
+      waiting && `${waiting === 1 ? 'a file waits for its folder' : `${waiting} files wait for their folders`} (unplugged drive?)`,
+      failed.length && `${failed.length} not deleted: ${failed[0].error}`,
+    ].filter(Boolean).join(' · '));
+    poll();
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 $('#lb-delete').addEventListener('click', () => deletePhoto());
@@ -1227,10 +1336,18 @@ $('#lb-info-btn').addEventListener('click', toggleInfo);
 
 /** What a photo's right-click menu offers; `keys` are Electron accelerators, shown as the shortcut. */
 function photoActions(item, inViewer) {
+  // On one of several selected photos, the menu is about the selection.
+  if (!inViewer && selected.has(item.id) && selected.size > 1) {
+    return [
+      { id: 'deselect', label: 'Deselect', keys: null },
+      ...(state.canDelete ? [{ id: 'delete-selected', label: `Delete ${selected.size} Photos…`, keys: 'Backspace', separator: true }] : []),
+    ];
+  }
   return [
     ...(item.kind === 'image' && canCopy() ? [{ id: 'copy', label: 'Copy Photo', keys: inViewer ? 'CmdOrCtrl+C' : null }] : []),
     ...(canReveal() ? [{ id: 'reveal', label: revealLabel(), keys: null }] : []),
     { id: 'info', label: inViewer && lightbox.classList.contains('info-open') ? 'Hide Info' : 'Get Info', keys: inViewer ? 'I' : null },
+    ...(inViewer ? [] : [{ id: selected.has(item.id) ? 'deselect' : 'select', label: selected.has(item.id) ? 'Deselect' : 'Select', keys: null }]),
     ...(state.canDelete ? [{ id: 'delete', label: 'Delete…', keys: inViewer ? 'CmdOrCtrl+Backspace' : null, separator: true }] : []),
   ];
 }
@@ -1239,6 +1356,8 @@ function runPhotoAction(id, item, inViewer) {
   if (id === 'copy') copyImage(item);
   else if (id === 'reveal') reveal(item);
   else if (id === 'delete') deletePhoto(item);
+  else if (id === 'select' || id === 'deselect') toggleSelected(item);
+  else if (id === 'delete-selected') deleteSelected();
   else if (id === 'info' && inViewer) toggleInfo();
   else if (id === 'info') {
     openLightbox(item.id);
@@ -1304,6 +1423,14 @@ addEventListener('contextmenu', async (e) => {
 addEventListener('keydown', (e) => {
   // A dialog over the viewer (deleting) gets its own keys: Esc closes it, not the photo.
   if (askDialog.open) return;
+  // With photos selected in the timeline: Esc deselects them, ⌫ or Delete deletes them (after asking).
+  if (lightbox.hidden && selecting() && !document.querySelector('dialog[open]') && !e.target.closest?.('input, textarea, [contenteditable]')) {
+    if (e.key === 'Escape') clearSelection();
+    else if ((e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.altKey && state.canDelete) deleteSelected();
+    else return;
+    e.preventDefault();
+    return;
+  }
   // ⌫, Delete or ⌘⌫ deletes the photo (after asking).
   if (!lightbox.hidden && (e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.altKey && state.canDelete) {
     deletePhoto();

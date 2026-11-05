@@ -24,6 +24,12 @@
     <div class="spacer"></div>
     <button class="btn primary" id="add-btn"><span data-icon="plus"></span><span class="label">Add folder</span></button>
   </header>
+  <div class="select-bar" id="select-bar" role="toolbar" aria-label="Selected photos" hidden>
+    <button class="icon-btn" id="select-clear" aria-label="Deselect all" data-icon="x"></button>
+    <span class="select-count" id="select-count" aria-live="polite"></span>
+    <div class="spacer"></div>
+    <button class="btn danger" id="select-delete" hidden><span data-icon="trash"></span><span class="label">Delete</span></button>
+  </div>
 
   <aside class="sidebar" id="sidebar">
     <nav class="nav" id="nav">

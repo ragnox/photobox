@@ -233,6 +233,16 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     res.json({ ...result, version: indexer.version });
   });
 
+  // Delete several photos from all devices: a selection in the timeline.
+  app.post('/api/media/delete', async (req, res) => {
+    if (!deletions) return res.status(503).json({ error: 'Deleting is unavailable' });
+    const list = req.body?.ids;
+    if (!Array.isArray(list) || !list.length || list.length > 10_000 || !list.every((id) => Number.isSafeInteger(id) && id > 0)) {
+      return res.status(400).json({ error: 'ids must be a list of photo ids' });
+    }
+    res.json({ ...await deletions.deleteMany(list), version: indexer.version });
+  });
+
   app.get('/api/deletions', (req, res) => res.json(deletions?.list() ?? []));
 
   // Clear photos from the Deleted list (all of them without `photos`): Photobox forgets them.
