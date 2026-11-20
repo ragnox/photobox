@@ -216,6 +216,9 @@ test('phone originals are indexed with capture metadata and automatically export
   await s.app.backup.flush();
   const manifest = JSON.parse(await fs.readFile(path.join(s.dest, 'photobox-export.json'), 'utf8'));
   assert.equal(manifest.items[receipt.relative_path].favorite, true);
+  // Writing the favorite into the export checked the photo there again; that copied nothing.
+  const log = (await s.local('GET', '/api/status')).json.activity.recent.map((e) => e.text);
+  assert.deepEqual(log.slice(0, 2), [`Checked 1 phone photo in ${s.dest}: already there`, `Exported 1 phone photo into ${s.dest}`]);
   await s.restart();
   await s.app.backup.flush();
   assert.equal(s.receipt(id).relative_path, receipt.relative_path);

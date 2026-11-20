@@ -28,7 +28,7 @@ export class BackupQueue {
     this.status = { running: false, configured: Boolean(config.backupDir), phase: 'idle', done: 0, total: 0, currentFile: null,
       received: 0, indexed: 0, exported: 0, failed: 0, error: null, lastRun: null, lastSuccess: null };
     uploads.onReceived = () => this.request();
-    this.onRun = null; // ({ copied, failed, error, destination }) after each run
+    this.onRun = null; // ({ copied, checked, failed, error, destination }) after each run
     uploads.assetState = (row) => this.proof(row);
     this.retry = setInterval(() => this.request(), config.backupRetryMs);
     this.retry.unref();
@@ -56,7 +56,7 @@ export class BackupQueue {
           this.status.running = true;
           try { await this.run(); } catch (err) {
             this.status.error = err.message;
-            this.onRun?.({ copied: 0, failed: 0, error: err.message, destination: this.config.backupDir });
+            this.onRun?.({ copied: 0, checked: 0, failed: 0, error: err.message, destination: this.config.backupDir });
           }
           this.status.running = false;
           Object.assign(this.status, { phase: 'idle', currentFile: null });
@@ -145,7 +145,8 @@ export class BackupQueue {
     let destinationError = null;
     try { destination = await this.destination(); } catch (err) { destinationError = err; this.status.error = err.message; }
     const pending = [];
-    let copied = 0;
+    let copied = 0; // files the export put there now
+    let checked = 0; // exports verified, whether copied now or already there
     for (const row of rows) {
       if (this.closed) break;
       this.status.currentFile = row.filename;
@@ -188,6 +189,7 @@ export class BackupQueue {
           validateDestination: () => this.assertDestination(destination),
           onProgress: (progress) => Object.assign(this.status, { phase: `export-${progress.phase}`, done: progress.done, total: progress.total }),
         }));
+        copied = result.copied;
         Object.assign(this.status, { phase: 'export-verifying', done: 0, total: pending.length });
         for (const { row, media } of pending) {
           this.status.currentFile = row.filename;
@@ -208,14 +210,14 @@ export class BackupQueue {
             this.library.q('UPDATE backup_uploads SET last_error = NULL WHERE id = ?').run(row.id);
             this.repair.delete(row.id);
             this.status.exported++;
-            copied++;
+            checked++;
           } catch (err) { this.failed(row, err); }
           this.status.done++;
         }
       } catch (err) { for (const { row } of pending) this.failed(row, err); }
     }
     if (!this.status.failed && !this.status.error) this.status.lastSuccess = Date.now();
-    this.onRun?.({ copied, failed: this.status.failed, error: this.status.error, destination: destination?.root ?? this.config.backupDir });
+    this.onRun?.({ copied, checked, failed: this.status.failed, error: this.status.error, destination: destination?.root ?? this.config.backupDir });
   }
 
   failed(row, err) {

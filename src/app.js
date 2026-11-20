@@ -89,9 +89,11 @@ function reportActivity(activity, { library, indexer, uploads, backup }) {
     const device = library.devices().find((d) => d.id === row.device_id);
     if (device) activity.phone(device, true);
   };
-  backup.onRun = ({ copied, error, destination }) => {
+  backup.onRun = ({ copied, checked, error, destination }) => {
     const where = destination ? tilde(destination) : 'the export folder';
+    // A recheck (after a restart, say) that finds the photos there already copied nothing.
     if (copied) activity.add(`Exported ${count(copied, 'phone photo')} into ${where}`);
+    else if (checked) activity.add(`Checked ${count(checked, 'phone photo')} in ${where}: already there`);
     if (error) activity.add(`Phone photos couldn't be exported into ${where}: ${error}`, { failed: true });
   };
 }
