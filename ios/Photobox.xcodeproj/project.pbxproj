@@ -1,0 +1,399 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		7B0A0000000000000000000C /* PhotoboxKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7B0A0000000000000000000B /* PhotoboxKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		7B0A00000000000000000004 /* Photobox.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Photobox.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7B0A00000000000000000013 /* Photobox-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Photobox-Info.plist"; sourceTree = "<group>"; };
+		7B0A00000000000000000021 /* PhotoboxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PhotoboxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7B0A00000000000000000022 /* PhotoboxUITests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "PhotoboxUITests-Info.plist"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXContainerItemProxy section */
+		7B0A00000000000000000028 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7B0A00000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7B0A00000000000000000006;
+			remoteInfo = Photobox;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		7B0A00000000000000000005 /* Photobox */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Photobox;
+			sourceTree = "<group>";
+		};
+		7B0A00000000000000000020 /* PhotoboxUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PhotoboxUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		7B0A00000000000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7B0A0000000000000000000C /* PhotoboxKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7B0A00000000000000000025 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		7B0A00000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				7B0A00000000000000000005 /* Photobox */,
+				7B0A00000000000000000020 /* PhotoboxUITests */,
+				7B0A00000000000000000013 /* Photobox-Info.plist */,
+				7B0A00000000000000000022 /* PhotoboxUITests-Info.plist */,
+				7B0A00000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		7B0A00000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				7B0A00000000000000000004 /* Photobox.app */,
+				7B0A00000000000000000021 /* PhotoboxUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7B0A00000000000000000006 /* Photobox */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7B0A00000000000000000010 /* Build configuration list for PBXNativeTarget "Photobox" */;
+			buildPhases = (
+				7B0A00000000000000000007 /* Sources */,
+				7B0A00000000000000000008 /* Frameworks */,
+				7B0A00000000000000000009 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				7B0A00000000000000000005 /* Photobox */,
+			);
+			name = Photobox;
+			packageProductDependencies = (
+				7B0A0000000000000000000B /* PhotoboxKit */,
+			);
+			productName = Photobox;
+			productReference = 7B0A00000000000000000004 /* Photobox.app */;
+			productType = "com.apple.product-type.application";
+		};
+		7B0A00000000000000000023 /* PhotoboxUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7B0A00000000000000000029 /* Build configuration list for PBXNativeTarget "PhotoboxUITests" */;
+			buildPhases = (
+				7B0A00000000000000000024 /* Sources */,
+				7B0A00000000000000000025 /* Frameworks */,
+				7B0A00000000000000000026 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7B0A00000000000000000027 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				7B0A00000000000000000020 /* PhotoboxUITests */,
+			);
+			name = PhotoboxUITests;
+			productName = PhotoboxUITests;
+			productReference = 7B0A00000000000000000021 /* PhotoboxUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		7B0A00000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					7B0A00000000000000000006 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					7B0A00000000000000000023 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 7B0A00000000000000000006;
+					};
+				};
+			};
+			buildConfigurationList = 7B0A0000000000000000000D /* Build configuration list for PBXProject "Photobox" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 7B0A00000000000000000002;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				7B0A0000000000000000000A /* XCLocalSwiftPackageReference "PhotoboxKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 7B0A00000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7B0A00000000000000000006 /* Photobox */,
+				7B0A00000000000000000023 /* PhotoboxUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		7B0A00000000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7B0A00000000000000000026 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7B0A00000000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7B0A00000000000000000024 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7B0A00000000000000000027 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7B0A00000000000000000006 /* Photobox */;
+			targetProxy = 7B0A00000000000000000028 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		7B0A0000000000000000000E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		7B0A0000000000000000000F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		7B0A00000000000000000011 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Photobox-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = local.photobox.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		7B0A00000000000000000012 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Photobox-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = local.photobox.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		7B0A0000000000000000002A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "PhotoboxUITests-Info.plist";
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = local.photobox.ios.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Photobox;
+			};
+			name = Debug;
+		};
+		7B0A0000000000000000002B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "PhotoboxUITests-Info.plist";
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = local.photobox.ios.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Photobox;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		7B0A0000000000000000000D /* Build configuration list for PBXProject "Photobox" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7B0A0000000000000000000E /* Debug */,
+				7B0A0000000000000000000F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7B0A00000000000000000010 /* Build configuration list for PBXNativeTarget "Photobox" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7B0A00000000000000000011 /* Debug */,
+				7B0A00000000000000000012 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7B0A00000000000000000029 /* Build configuration list for PBXNativeTarget "PhotoboxUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7B0A0000000000000000002A /* Debug */,
+				7B0A0000000000000000002B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		7B0A0000000000000000000A /* XCLocalSwiftPackageReference "PhotoboxKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = PhotoboxKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7B0A0000000000000000000B /* PhotoboxKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PhotoboxKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 7B0A00000000000000000001 /* Project object */;
+}

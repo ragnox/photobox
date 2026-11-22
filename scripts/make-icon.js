@@ -2,6 +2,7 @@
 // Renders the app icons from one artwork:
 //   build/icon.png        1024², macOS icon grid; electron-builder turns it into .icns/.ico
 //   public/icons/*.png    for the installable web app (Android home screen, browser tabs)
+//   ios/Photobox/Assets.xcassets/AppIcon.appiconset/icon-1024.png   Photobox for iPhone
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -12,9 +13,10 @@ const out = (rel) => fileURLToPath(new URL(`../${rel}`, import.meta.url));
 //   mac:      the whole canvas, with Apple's margin and a soft shadow
 //   app:      just the rounded tile
 //   maskable: the tile edge to edge; Android crops it to its own shape
+//   ios:      the same, without transparency; iOS rounds the corners itself
 function svg(kind) {
   const viewBox = kind === 'mac' ? '0 0 1024 1024' : '100 100 824 824';
-  const rx = kind === 'maskable' ? 0 : 185;
+  const rx = kind === 'maskable' || kind === 'ios' ? 0 : 185;
   return `<svg width="1024" height="1024" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
@@ -44,11 +46,14 @@ const icons = [
   ['public/icons/icon-192.png', 'app', 192],
   ['public/icons/icon-512.png', 'app', 512],
   ['public/icons/maskable-512.png', 'maskable', 512],
+  ['ios/Photobox/Assets.xcassets/AppIcon.appiconset/icon-1024.png', 'ios', 1024],
 ];
 
 await fs.mkdir(out('build/'), { recursive: true });
 await fs.mkdir(out('public/icons/'), { recursive: true });
+await fs.mkdir(out('ios/Photobox/Assets.xcassets/AppIcon.appiconset/'), { recursive: true });
 for (const [file, kind, size] of icons) {
-  await sharp(Buffer.from(svg(kind))).resize(size, size).png().toFile(out(file));
+  const image = sharp(Buffer.from(svg(kind))).resize(size, size);
+  await (kind === 'ios' ? image.flatten({ background: '#2f4ac4' }) : image).png().toFile(out(file));
   console.log(`Wrote ${out(file)}`);
 }

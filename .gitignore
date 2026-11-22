@@ -18,3 +18,8 @@ build/licenses/npm/
 build/licenses/production-dependencies.json
 build/licenses/Electron-LICENSE.txt
 build/licenses/LICENSES.chromium.html
+
+# Swift package build output and Xcode user state
+ios/**/.build/
+ios/**/xcuserdata/
+*.xcuserstate

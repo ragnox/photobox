@@ -27,7 +27,8 @@ receipt request, including HEAD/OPTIONS/DELETE. A browser's pairing cookie alone
 is insufficient. Revoking the device denies subsequent requests without deleting
 its originals. Upload IDs and receipt queries are scoped to the owning token.
 
-On the computer, choose **Connect a phone → Photobox for Android**. Each pairing
+On the computer, choose **Connect a phone → Photobox for Android** (or **Photobox for
+iPhone**: both apps read the same code). Each pairing
 link now has a `native` object containing `payload` (versioned JSON) and `qr` (SVG).
 The payload includes the host address, one-time code, expiry and public trust
 certificate DER/base64 with full SHA-256. Photobox's own certificate uses `kind: ca`;

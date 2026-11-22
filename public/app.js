@@ -859,25 +859,28 @@ function renderPairing({ links, fingerprint, expiresAt }) {
     return;
   }
   pairBody.innerHTML = `
-    <label>Connect using <select id="pair-client"><option value="browser">Phone browser</option><option value="android">Photobox for Android</option></select></label>
+    <label>Connect using <select id="pair-client"><option value="browser">Phone browser</option><option value="android">Photobox for Android</option><option value="ios">Photobox for iPhone</option></select></label>
     <ol class="steps" id="pair-browser-steps">
       <li>On your phone, open the camera and scan this code. The phone needs to be on the same Wi-Fi or VPN.</li>
       ${fingerprint ? '<li>The first time, the browser warns that the connection is not private, because Photobox uses its own certificate. Tap <b>Advanced</b>, then <b>Proceed</b>.</li>' : ''}
       <li>Name the phone and tap <b>Connect</b>.</li>
     </ol>
     <p id="pair-android-steps" hidden>In Photobox for Android, tap <b>Scan host QR</b>. This code includes the host's public trust certificate; no browser certificate installation is needed.</p>
+    <p id="pair-ios-steps" hidden>In Photobox for iPhone, tap <b>Scan the code</b>. This code includes the host's public trust certificate; no certificate installation is needed.</p>
     <div class="qr" id="pair-qr">${links[0].qr}</div>
     ${links.length > 1 ? `<select id="pair-address" aria-label="Address">${links.map((l, i) => `<option value="${i}">${esc(new URL(l.url).host)}</option>`).join('')}</select>` : ''}
     <p class="muted small mono" id="pair-url">${esc(links[0].url)}</p>
-    <details id="pair-native-copy" hidden><summary>Copy Android pairing data</summary><textarea id="pair-native-payload" rows="4" readonly aria-label="Android pairing data"></textarea><button class="btn" id="pair-copy-native" type="button">Copy pairing data</button></details>
+    <details id="pair-native-copy" hidden><summary>Copy pairing data</summary><textarea id="pair-native-payload" rows="4" readonly aria-label="Pairing data for the app"></textarea><button class="btn" id="pair-copy-native" type="button">Copy pairing data</button></details>
     <p class="muted small">The code works once, until ${esc(fmtTime.format(new Date(expiresAt)))}.</p>
     ${fingerprint ? `<details class="muted small"><summary>Certificate fingerprint</summary>
       <p>When you install the Photobox certificate on your phone, its SHA-256 fingerprint must be:</p><p class="mono">${esc(fingerprint)}</p></details>` : ''}`;
   const update = () => {
     const link = links[Number($('#pair-address')?.value ?? 0)];
-    const native = $('#pair-client').value === 'android';
+    const client = $('#pair-client').value;
+    const native = client !== 'browser'; // the Android and iPhone apps read the same code
     $('#pair-browser-steps').hidden = native;
-    $('#pair-android-steps').hidden = !native;
+    $('#pair-android-steps').hidden = client !== 'android';
+    $('#pair-ios-steps').hidden = client !== 'ios';
     $('#pair-native-copy').hidden = !native;
     $('#pair-qr').classList.toggle('native-qr', native);
     $('#pair-qr').innerHTML = native ? link.native.qr : link.qr;
@@ -912,7 +915,7 @@ async function openPairDialog() {
       if (added) {
         clearInterval(pairTimer);
         pairBody.innerHTML = `<p class="paired">${icon('check')}<span><b>${esc(added.name)}</b> is connected.</span></p>
-          <p class="muted">In the Android app, choose your backup folders. In the browser, choose <b>Install app</b> or <b>Add to Home screen</b>.</p>`;
+          <p class="muted">In the Android app, choose your backup folders; the iPhone app starts backing up by itself. In the browser, choose <b>Install app</b> or <b>Add to Home screen</b>.</p>`;
       } else if (Date.now() > pairing.expiresAt) {
         clearInterval(pairTimer);
         pairBody.innerHTML = '<p>The pairing code has expired.</p><button type="button" class="btn" id="pair-again">Make a new code</button>';
@@ -1212,7 +1215,7 @@ async function deletePhoto(item = state.items[lb.index]) {
     body: `<p><b>${esc(d.filename)}</b>, taken ${esc(fmtFull.format(wallClock(d.local_time)))}.</p>
       <p>${files.length === 1 ? 'Its file on this computer goes' : `Its ${files.length} files on this computer go`} to the Trash${d.versions.length ? ', its other versions too' : ''}:</p>
       <ul class="places">${shown.map((f) => `<li>${esc(homePath(f))}</li>`).join('')}${files.length > shown.length ? `<li>and ${files.length - shown.length} more</li>` : ''}</ul>
-      <p>Phones with Photobox for Android delete their copy too, once you confirm it there.</p>
+      <p>Phones with Photobox for Android or iPhone delete their copy too, once you confirm it there.</p>
       <p class="muted small">Its fingerprint stays on the Deleted list, so a copy that turns up again is deleted too.</p>`,
   });
   if (!yes) return;
@@ -1275,7 +1278,7 @@ async function deleteSelected() {
     action: `Delete ${items.length}`,
     body: `<p>${esc(what)}, taken ${first === last ? `on ${esc(first)}` : `between ${esc(first)} and ${esc(last)}`}.</p>
       <p>Their files on this computer go to the Trash, their other versions too.</p>
-      <p>Phones with Photobox for Android delete their copies too, once you confirm it there.</p>
+      <p>Phones with Photobox for Android or iPhone delete their copies too, once you confirm it there.</p>
       <p class="muted small">Their fingerprints stay on the Deleted list, so a copy that turns up again is deleted too.</p>`,
   });
   if (!yes) return;

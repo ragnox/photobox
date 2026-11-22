@@ -15,6 +15,7 @@ import { exportLibrary } from '../../src/export.js';
 import { createApp } from '../../src/server.js';
 import { Deletions } from '../../src/deletions.js';
 import { Activity } from '../../src/activity.js';
+import { networkAccess } from '../../src/remote.js';
 import { openPage } from './page.js';
 
 const [W, H] = [480, 360];
@@ -94,7 +95,10 @@ before(async () => {
   } });
   const watcher = { watchSource() {}, async unwatch() {} };
   const activity = new Activity(null);
-  const server = http.createServer(createApp({ library, indexer, watcher, config, deletions, activity, reveal: async (file) => revealed.push(file) }));
+  // Phones may connect, on this computer only: for the pairing dialog.
+  const network = networkAccess(config, library, { address: '127.0.0.1' });
+  network.port = 4568;
+  const server = http.createServer(createApp({ library, indexer, watcher, config, deletions, activity, network, reveal: async (file) => revealed.push(file) }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const screenshots = process.env.PHOTOBOX_UI_SCREENSHOTS ? path.resolve(process.env.PHOTOBOX_UI_SCREENSHOTS) : null;
   if (screenshots) await fs.mkdir(screenshots, { recursive: true });
@@ -414,6 +418,40 @@ test('in a browser, Share hands the photo to the system share sheet, named after
   } finally {
     await page.evaluate(() => { delete navigator.canShare; delete navigator.share; });
     await page.key('Escape');
+  }
+});
+
+test('a phone connects with its browser or with Photobox for Android or iPhone; both apps read the same code', async () => {
+  const { page } = ctx;
+  await home();
+  await page.click('#pair-btn');
+  const shown = () => page.evaluate(() => Object.fromEntries([
+    ['browser', !document.querySelector('#pair-browser-steps').hidden],
+    ['android', !document.querySelector('#pair-android-steps').hidden],
+    ['ios', !document.querySelector('#pair-ios-steps').hidden],
+    ['copy', !document.querySelector('#pair-native-copy').hidden],
+    ['appCode', document.querySelector('#pair-qr').classList.contains('native-qr')],
+  ]));
+  const choose = (client) => page.evaluate((c) => {
+    const select = document.querySelector('#pair-client');
+    select.value = c;
+    select.dispatchEvent(new Event('change'));
+  }, client);
+  const payload = async () => JSON.parse(await page.evaluate(() => document.querySelector('#pair-native-payload').value));
+  try {
+    await page.waitFor(() => Boolean(document.querySelector('#pair-client')), null, 'the pairing code');
+    assert.deepEqual(await shown(), { browser: true, android: false, ios: false, copy: false, appCode: false });
+    await choose('ios');
+    assert.deepEqual(await shown(), { browser: false, android: false, ios: true, copy: true, appCode: true });
+    assert.match(await page.evaluate(() => document.querySelector('#pair-ios-steps').textContent), /Photobox for iPhone, tap Scan the code/);
+    const forIPhone = await payload();
+    assert.equal(forIPhone.type, 'photobox-pair');
+    assert.equal(new URL(forIPhone.server).origin, 'https://127.0.0.1:4568');
+    await choose('android');
+    assert.deepEqual(await shown(), { browser: false, android: true, ios: false, copy: true, appCode: true });
+    assert.equal((await payload()).code, forIPhone.code);
+  } finally {
+    await page.evaluate(() => document.querySelector('#pair-dialog').close());
   }
 });
 
