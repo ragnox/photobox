@@ -10,6 +10,7 @@ import { SidecarIndex, classifyJson, albumTitle, sidecarMeta, takeoutFolderKey }
 import { MANIFEST, ManifestIndex, readManifest, manifestMeta } from './manifest.js';
 import { shotKey, findVersions } from './versions.js';
 import { safeRelative } from './export.js';
+import { FolderAccess } from './access.js';
 
 async function isReadableDir(dir) {
   try {
@@ -121,10 +122,13 @@ export async function extractMeta(file, kind, stat, sc) {
 export class Indexer extends EventEmitter {
   #albumsChanged = false;
 
-  constructor(library, config) {
+  constructor(library, config, { access = new FolderAccess() } = {}) {
     super();
     this.library = library;
     this.config = config;
+    // Which source folders may be read yet (see access.js); the watcher asks it too.
+    this.access = access;
+    this.stopped = false;
     this.queue = Promise.resolve();
     // Hashes currently being imported, so parallel workers don't import duplicates twice.
     this.inflight = new Map();
@@ -157,9 +161,21 @@ export class Indexer extends EventEmitter {
     return next;
   }
 
-  scanSource(source) {
-    if (source.managed === 'backup') return Promise.resolve({ files: 0, added: 0 });
+  /**
+   * Scans wait for their folder to be read first, outside the queue: a folder macOS is still asking
+   * you about doesn't hold up the others or phone uploads. One Photobox may not read is skipped.
+   */
+  async scanSource(source) {
+    if (source.managed === 'backup') return { files: 0, added: 0 };
+    if (!await this.access.readable(source.path)) return { files: 0, added: 0, refused: true };
+    if (this.stopped) return { files: 0, added: 0 };
     return this.enqueue(() => this.#scan(source));
+  }
+
+  /** No more scans; resolves when the one under way is done. */
+  stop() {
+    this.stopped = true;
+    return this.queue;
   }
 
   /** Re-check specific folders of a source (used by the watcher). */

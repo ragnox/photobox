@@ -57,7 +57,7 @@ function listen(server, port, host) {
 }
 
 /** The library for `config`, with `folders` added as sources, and its indexer. An archive's library also has the archive's own photos. */
-export function openLibrary(config, folders = []) {
+export function openLibrary(config, folders = [], { access } = {}) {
   for (const folder of folders) {
     const problem = sourceProblem(path.resolve(folder), config);
     if (problem) throw new Error(`${problem}: ${path.resolve(folder)}`);
@@ -65,11 +65,23 @@ export function openLibrary(config, folders = []) {
   const library = new Library(config.dbPath);
   if (config.archive) library.archiveSource(config.archive.root);
   for (const folder of folders) library.addSource(path.resolve(folder));
-  return { library, indexer: new Indexer(library, config) };
+  return { library, indexer: new Indexer(library, config, access ? { access } : {}) };
 }
 
+/**
+ * Scans every source, one after another. A folder that can't be read yet (macOS is asking you about it,
+ * see access.js) doesn't hold up the rest: it's scanned once it can be.
+ */
 export async function scanAll(library, indexer, onScanned = () => {}) {
-  for (const source of library.sources()) onScanned(source, await indexer.scanSource(source));
+  const sources = library.sources();
+  const scan = async (source) => onScanned(source, await indexer.scanSource(source));
+  const answers = sources.map((source) => indexer.access.answer(source.path)); // all reads at once
+  const later = [];
+  for (const [i, source] of sources.entries()) {
+    if (await answers[i] === null) later.push(scan(source));
+    else await scan(source);
+  }
+  await Promise.all(later);
 }
 
 /** What the indexer and phone backups did, for the activity log (see activity.js). */
@@ -89,6 +101,15 @@ function reportActivity(activity, { library, indexer, uploads, backup }) {
     const device = library.devices().find((d) => d.id === row.device_id);
     if (device) activity.phone(device, true);
   };
+  // A folder macOS is asking you about: shown while it waits, and why it's skipped if you said no.
+  const mac = process.platform === 'darwin';
+  const folder = (dir) => nameOfSource(library, dir);
+  indexer.access.on('waiting', (dir) => activity.start(`access:${dir}`,
+    mac ? `Waiting to read ${folder(dir)}: if your Mac asks whether Photobox may, click Allow` : `Waiting to read ${folder(dir)}`));
+  indexer.access.on('readable', (dir) => activity.end(`access:${dir}`));
+  indexer.access.on('refused', (dir, err) => activity.end(`access:${dir}`, mac && err.code === 'EPERM'
+    ? `Photobox may not read ${folder(dir)}: allow it in System Settings › Privacy & Security › Files & Folders`
+    : `Photobox may not read ${folder(dir)} (${err.code})`, { failed: true }));
   backup.onRun = ({ copied, checked, error, destination }) => {
     const where = destination ? tilde(destination) : 'the export folder';
     // A recheck (after a restart, say) that finds the photos there already copied nothing.
@@ -103,7 +124,7 @@ function reportActivity(activity, { library, indexer, uploads, backup }) {
  * it, so this throws AlreadyRunning (with the other instance's URL) instead.
  * With `listen`, phones can pair and connect over the network too.
  */
-export async function startPhotobox({ dataDir, archive, port, folders = [], onScanned, listen: address, remotePort, tlsCert, tlsKey, backupDir, managedBy = 'cli', trash } = {}) {
+export async function startPhotobox({ dataDir, archive, port, folders = [], onScanned, listen: address, remotePort, tlsCert, tlsKey, backupDir, managedBy = 'cli', trash, access } = {}) {
   const config = loadConfig({ dataDir, archive, port, backupDir, listen: address, remotePort, tlsCert, tlsKey });
   address = config.listen;
   remotePort = config.remotePort;
@@ -112,7 +133,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
   const other = runningInstance(config);
   if (other) throw new AlreadyRunning(other.url);
 
-  const { library, indexer } = openLibrary(config, folders);
+  const { library, indexer } = openLibrary(config, folders, { access });
   const watcher = new SourceWatcher(library, indexer);
   const network = address ? networkAccess(config, library, { address, tlsCert, tlsKey }) : null;
   const uploads = new Uploads(library, config);
@@ -172,7 +193,7 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
   fs.writeFileSync(lockPath(config), JSON.stringify({ pid: process.pid, url }));
 
   watcher.start();
-  scanAll(library, indexer, onScanned).catch((err) => console.error(err));
+  const scanned = scanAll(library, indexer, onScanned).catch((err) => console.error(err));
   backup.request();
   deletions.request();
 
@@ -190,10 +211,11 @@ export async function startPhotobox({ dataDir, archive, port, folders = [], onSc
     await deletions.close();
     await backup.close();
     await uploads.close();
-    await indexer.queue;
+    await indexer.stop();
     activity.close();
     if (runningInstance(config) === null) fs.rmSync(lockPath(config), { force: true });
     library.close();
   }
-  return { url, network: network?.info() ?? null, config, indexer, backup, hostControl, close };
+  // `scanned`: every source was scanned once (a folder still waiting to be read, once it was).
+  return { url, network: network?.info() ?? null, config, indexer, backup, hostControl, scanned, close };
 }
