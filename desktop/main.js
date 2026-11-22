@@ -1,9 +1,11 @@
 // Menu-bar host: renderer windows can come and go without interrupting backup.
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, Menu, Tray, nativeImage, dialog, ipcMain, nativeTheme, screen, shell, utilityProcess, powerMonitor } from 'electron';
+import { app, BrowserWindow, Menu, ShareMenu, Tray, nativeImage, dialog, ipcMain, nativeTheme, screen, shell, utilityProcess, powerMonitor } from 'electron';
 import { defaultDataDir } from '../src/config.js';
 import { loadHostSettings, saveHostSettings } from '../src/host-settings.js';
 import { prepareDesktopHost, loadDesktopPreferences, saveDesktopPreferences } from './preferences.js';
@@ -245,14 +247,77 @@ ipcMain.handle('pick-folder', async (event) => {
   return result.canceled ? null : result.filePaths[0];
 });
 ipcMain.on('reveal', (event, file) => { if (trusted(event) && typeof file === 'string' && path.isAbsolute(file)) shell.showItemInFolder(file); });
+/** Photos' files the page asks to share: files on this computer, at most 500. Checked off the main thread, so a folder macOS asks about can't freeze the window. */
+async function shareable(files) {
+  const asked = (Array.isArray(files) ? files.slice(0, 500) : []).filter((f) => typeof f === 'string' && path.isAbsolute(f));
+  const isFile = await Promise.all(asked.map((f) => fs.promises.stat(f).then((s) => s.isFile(), () => false)));
+  return asked.filter((f, i) => isFile[i]);
+}
+// macOS's share menu (AirDrop, Messages, Mail, WhatsApp…) for photos, at `at` in the window or else at the pointer.
+ipcMain.handle('share', async (event, files, at) => {
+  if (!trusted(event) || process.platform !== 'darwin') return false;
+  const filePaths = await shareable(files);
+  if (!filePaths.length) return false;
+  const where = Number.isFinite(at?.x) && Number.isFinite(at?.y) ? { x: Math.round(at.x), y: Math.round(at.y) } : {};
+  new ShareMenu({ filePaths }).popup({ browserWindow: win, ...where });
+  return true;
+});
+// WhatsApp for Mac has no share extension, so the share menu can't offer it; it opens photos and
+// videos handed to it, though, and asks which chat they go to.
+async function whatsapp() {
+  if (process.platform !== 'darwin') return null;
+  try { return (await app.getApplicationInfoForProtocol('whatsapp://send')).path || null; } catch { return null; }
+}
+ipcMain.handle('whatsapp', async (event) => trusted(event) && Boolean(await whatsapp()));
+ipcMain.handle('send-to-whatsapp', async (event, files) => {
+  if (!trusted(event)) return false;
+  const [where, filePaths] = await Promise.all([whatsapp(), shareable(files)]);
+  if (!where || !filePaths.length) return false;
+  await promisify(execFile)('/usr/bin/open', ['-a', where, ...filePaths]);
+  return true;
+});
+
+/** The files of these photos and a small picture of the first, asked of the host the window shows. */
+async function dragged(ids) {
+  const list = (Array.isArray(ids) ? ids.slice(0, 500) : []).filter((id) => Number.isSafeInteger(id) && id > 0);
+  if (!list.length || !serverUrl) return null;
+  const res = await fetch(`${serverUrl}/api/media/files`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: list }) });
+  const files = res.ok ? await shareable((await res.json()).files) : [];
+  if (!files.length) return null;
+  let icon = nativeImage.createEmpty();
+  try {
+    const thumb = await fetch(`${serverUrl}/api/media/${list[0]}/thumb`);
+    if (thumb.ok) icon = nativeImage.createFromBuffer(Buffer.from(await thumb.arrayBuffer())).resize({ height: 64 });
+  } catch { /* the file's own icon will do */ }
+  if (icon.isEmpty()) icon = await app.getFileIcon(files[0]);
+  return { files, icon };
+}
+// Photos dragged out of the window, as their files: into a WhatsApp chat, a mail, a Finder folder.
+ipcMain.on('start-drag', async (event, ids) => {
+  if (!trusted(event)) return;
+  try {
+    const drag = await dragged(ids);
+    if (drag) event.sender.startDrag({ file: drag.files[0], files: drag.files, icon: drag.icon });
+  } catch (err) { log(`Could not drag photos out: ${err.message}`); }
+});
+
 // A photo's right-click menu, as the page lists it: resolves with the chosen item's id, or null.
-ipcMain.handle('context-menu', (event, items) => {
+// An item with `files` is the share menu for them (macOS).
+ipcMain.handle('context-menu', async (event, items) => {
   if (!trusted(event) || !Array.isArray(items)) return null;
+  const listed = items.slice(0, 20).filter((i) => typeof i?.id === 'string' && typeof i.label === 'string');
+  const sharing = new Map();
+  for (const i of listed) {
+    const filePaths = i.files && process.platform === 'darwin' ? await shareable(i.files) : [];
+    if (filePaths.length) sharing.set(i, { role: 'shareMenu', sharingItem: { filePaths } });
+  }
   return new Promise((resolve) => {
-    const menu = Menu.buildFromTemplate(items.slice(0, 20).filter((i) => typeof i?.id === 'string' && typeof i.label === 'string').flatMap((i) => [
-      ...(i.separator === true ? [{ type: 'separator' }] : []),
-      { label: i.label, accelerator: typeof i.keys === 'string' ? i.keys : undefined, registerAccelerator: false, click: () => resolve(i.id) },
-    ]));
+    const menu = Menu.buildFromTemplate(listed
+      .filter((i) => !i.files || sharing.has(i)).flatMap((i) => [
+        ...(i.separator === true ? [{ type: 'separator' }] : []),
+        i.files ? { label: i.label, ...sharing.get(i) }
+          : { label: i.label, accelerator: typeof i.keys === 'string' ? i.keys : undefined, registerAccelerator: false, click: () => resolve(i.id) },
+      ]));
     // macOS can report the menu closed before the click on an item arrives: that click still wins.
     menu.popup({ window: win, callback: () => setTimeout(() => resolve(null), 100) });
   });

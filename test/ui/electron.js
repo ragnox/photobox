@@ -17,6 +17,11 @@ const asDesktop = process.env.PHOTOBOX_UI_DESKTOP === '1';
 let menuChoice = null;
 ipcMain.handle('context-menu', (event, items) => { send({ menu: items }); return menuChoice; });
 ipcMain.on('reveal', (event, file) => send({ revealed: file }));
+ipcMain.handle('share', (event, files, at) => { send({ shared: { files, at } }); return true; });
+// PHOTOBOX_UI_WHATSAPP=1: WhatsApp is installed. What goes to it, and what is dragged out, is recorded.
+ipcMain.handle('whatsapp', () => process.env.PHOTOBOX_UI_WHATSAPP === '1');
+ipcMain.handle('send-to-whatsapp', (event, files) => { send({ whatsapp: files }); return true; });
+ipcMain.on('start-drag', (event, ids) => send({ dragged: ids }));
 
 // Not a top-level await: Electron doesn't get ready until this module has finished loading.
 app.whenReady().then(() => {

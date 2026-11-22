@@ -438,6 +438,11 @@ svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none;
 .desktop .topbar, .desktop .sidebar, .desktop .scrubber, .desktop .lb-top { user-select: none; -webkit-user-select: none; }
 .desktop .topbar { -webkit-app-region: drag; }
 .desktop .topbar button, .desktop .topbar a { -webkit-app-region: no-drag; }
+/* macOS drags the window from such an area even where something is drawn over it, so what covers the
+   top bar says no-drag; where it has nothing to click it drags the window itself. */
+.desktop .lightbox, .desktop .ctx-menu, .desktop .dialog { -webkit-app-region: no-drag; }
+.desktop .select-bar, .desktop .lb-top { -webkit-app-region: drag; }
+.desktop .select-bar :is(button, a, input, label), .desktop .lb-top :is(button, a) { -webkit-app-region: no-drag; }
 /* Room for the macOS traffic lights (hiddenInset title bar). */
 .desktop.platform-darwin .topbar { padding-left: 88px; }
 .desktop.platform-darwin .lb-top { padding-left: 86px; }

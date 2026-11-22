@@ -318,6 +318,21 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     res.json({ ok: true });
   });
 
+  // The files to share for these photos (the desktop app's share menu): the library folder's copy, else the shown file.
+  app.post('/api/media/files', hostOnly, async (req, res) => {
+    const list = req.body?.ids;
+    if (!Array.isArray(list) || !list.length || list.length > 500 || !list.every((id) => Number.isSafeInteger(id) && id > 0)) {
+      return res.status(400).json({ error: 'ids must be a list of at most 500 photo ids' });
+    }
+    const files = [];
+    for (const id of list) {
+      const d = await details(id);
+      const file = d && (d.copy ?? library.primaryPath(id));
+      if (file && !waitingFor(file) && await onDisk(file)) files.push(file);
+    }
+    res.json({ files });
+  });
+
   // The user says this photo and one shown as its version are different photos.
   app.post('/api/media/:id/separate', hostOnly, async (req, res) => {
     const media = mediaOr404(req, res);

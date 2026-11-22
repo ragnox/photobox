@@ -13,12 +13,13 @@ const DRIVER = fileURLToPath(new URL('./electron.js', import.meta.url));
 
 /**
  * `desktop: true` gives the page the desktop app's preload, as in the app; `page.desktop` then records the
- * native menus it asks for and the files it reveals, and `page.desktop.answer(id)` picks the next menu item.
+ * native menus it asks for, the files it reveals, shares and sends to WhatsApp (`whatsApp: true` says it's
+ * installed), the photos dragged out, and `page.desktop.answer(id)` picks the next menu item.
  */
-export async function openPage({ profile, screenshots = null, desktop: asDesktop = false }) {
-  const env = { ...process.env, PHOTOBOX_UI_PROFILE: profile, PHOTOBOX_UI_DESKTOP: asDesktop ? '1' : '' };
+export async function openPage({ profile, screenshots = null, desktop: asDesktop = false, whatsApp = false }) {
+  const env = { ...process.env, PHOTOBOX_UI_PROFILE: profile, PHOTOBOX_UI_DESKTOP: asDesktop ? '1' : '', PHOTOBOX_UI_WHATSAPP: whatsApp ? '1' : '' };
   delete env.ELECTRON_RUN_AS_NODE;
-  const desktop = { menus: [], revealed: [], answer: (id) => call('menuChoice', id) };
+  const desktop = { menus: [], revealed: [], shared: [], whatsApp: [], dragged: [], answer: (id) => call('menuChoice', id) };
   const child = spawn(require('electron'), [DRIVER], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-16_000); });
@@ -38,6 +39,9 @@ export async function openPage({ profile, screenshots = null, desktop: asDesktop
     if (message.console?.level === 'error' || message.console?.level === 3) errors.push(message.console.message);
     if (message.menu) desktop.menus.push(message.menu);
     if (message.revealed) desktop.revealed.push(message.revealed);
+    if (message.shared) desktop.shared.push(message.shared);
+    if (message.whatsapp) desktop.whatsApp.push(message.whatsapp);
+    if (message.dragged) desktop.dragged.push(message.dragged);
     const pending = waiting.get(message.id);
     if (!pending) return;
     waiting.delete(message.id);
@@ -87,6 +91,17 @@ export async function openPage({ profile, screenshots = null, desktop: asDesktop
     const [x, y] = [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)];
     const hit = document.elementFromPoint(x, y);
     if (!r.width || !r.height || !el.contains(hit)) return { hidden: true, covered: hit?.outerHTML.slice(0, 120) ?? null };
+    // In the desktop app, macOS takes a press in a `-webkit-app-region: drag` area for dragging the
+    // window, even where something else is drawn on top: only a later no-drag area takes it back.
+    // Synthetic clicks don't go through macOS, so this is checked here: as Chromium does, in page order.
+    let drags = null;
+    for (const e of document.querySelectorAll('*')) {
+      const region = getComputedStyle(e).getPropertyValue('-webkit-app-region');
+      if (region !== 'drag' && region !== 'no-drag') continue;
+      const b = e.getBoundingClientRect();
+      if (b.width && b.height && x >= b.left && x < b.right && y >= b.top && y < b.bottom) drags = region === 'drag' ? e : null;
+    }
+    if (drags) return { hidden: true, dragsWindow: drags.outerHTML.slice(0, 120) };
     return { x, y };
   }, selector);
 

@@ -259,8 +259,11 @@ test('in the desktop app the menu is a native one, and what was picked in it is 
     await page.desktop.answer('reveal');
     await page.rightClick(`.tile[data-id="${best.id}"]`);
     await until(() => page.desktop.revealed.length === 1, 'Show in Finder');
+    // On a Mac, Share is macOS's share menu for the photo's file in the library folder.
+    const sharing = process.platform === 'darwin' ? [{ id: 'share', label: 'Share', keys: null, files: [path.join(config.backupDir, '2024/03/PXL_1.jpg')] }] : [];
     assert.deepEqual(page.desktop.menus, [[
       { id: 'copy', label: 'Copy Photo', keys: null },
+      ...sharing,
       { id: 'reveal', label: finderLabel, keys: null },
       { id: 'info', label: 'Get Info', keys: null },
       { id: 'select', label: 'Select', keys: null },
@@ -275,6 +278,142 @@ test('in the desktop app the menu is a native one, and what was picked in it is 
     assert.deepEqual(page.errors, []);
   } finally {
     await page.close();
+  }
+});
+
+test('in the desktop app on a Mac, photos go to the share menu: from the viewer, the selection or its menu', { skip: process.platform !== 'darwin' && 'macOS only' }, async () => {
+  const { tmp, server, config, best, img2, img3 } = ctx;
+  const url = `http://localhost:${server.address().port}`;
+  const bad = await fetch(`${url}/api/media/files`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"ids":[]}' });
+  assert.equal(bad.status, 400);
+  const page = await openPage({ profile: path.join(tmp, 'electron-share'), desktop: true });
+  try {
+    await page.load(`${url}/`);
+    await page.click(`.tile[data-id="${best.id}"]`);
+    await page.waitFor(() => !document.querySelector('#lb-share').hidden, null, 'the share button');
+    await page.click('#lb-share');
+    await until(() => page.desktop.shared.length === 1, 'the share menu');
+    assert.deepEqual(page.desktop.shared[0].files, [path.join(config.backupDir, '2024/03/PXL_1.jpg')]);
+    assert.ok(Number.isFinite(page.desktop.shared[0].at.x), 'it opens at the button');
+    await page.key('Escape');
+
+    const copies = [path.join(config.backupDir, '2024/03/IMG_2.jpg'), path.join(config.backupDir, '2024/03/IMG_3.jpg')];
+    await page.click(`.tile[data-id="${img2.id}"] .pick`);
+    await page.click(`.tile[data-id="${img3.id}"] .pick`);
+    await page.waitFor(() => !document.querySelector('#select-share').hidden && document.querySelectorAll('.tile.selected').length === 2, null, 'two selected');
+    await page.click('#select-share');
+    await until(() => page.desktop.shared.length === 2, 'the share menu for the selection');
+    assert.deepEqual([...page.desktop.shared[1].files].sort(), copies);
+
+    await page.rightClick(`.tile[data-id="${img2.id}"]`);
+    await until(() => page.desktop.menus.length === 1, 'the menu');
+    const menu = page.desktop.menus[0];
+    assert.deepEqual(menu[0].label, 'Share 2 Photos');
+    assert.deepEqual([...menu[0].files].sort(), copies);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
+test('in the desktop app on a Mac, photos go to WhatsApp: from the viewer, the selection or its menu, or dragged into a chat', { skip: process.platform !== 'darwin' && 'macOS only' }, async () => {
+  const { tmp, server, config, best, img2, img3 } = ctx;
+  const original = path.join(config.backupDir, '2024/03/PXL_1.jpg');
+  const copies = [path.join(config.backupDir, '2024/03/IMG_2.jpg'), path.join(config.backupDir, '2024/03/IMG_3.jpg')];
+  const page = await openPage({ profile: path.join(tmp, 'electron-whatsapp'), desktop: true, whatsApp: true });
+  const dragStart = (selector) => page.evaluate((sel) => document.querySelector(sel).dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true })), selector);
+  try {
+    await page.load(`http://localhost:${server.address().port}/`);
+    await page.click(`.tile[data-id="${best.id}"]`);
+    await page.waitFor(() => !document.querySelector('#lb-whatsapp').hidden, null, 'the WhatsApp button');
+    await page.click('#lb-whatsapp');
+    await until(() => page.desktop.whatsApp.length === 1, 'the photo handed to WhatsApp');
+    assert.deepEqual(page.desktop.whatsApp[0], [original]);
+    await page.waitFor(() => document.querySelector('#toast').textContent === 'Pick the chat for it in WhatsApp', null, 'what to do in WhatsApp');
+    await dragStart('#lb-stage img');
+    await until(() => page.desktop.dragged.length === 1, 'the photo dragged out of the viewer');
+    assert.deepEqual(page.desktop.dragged[0], [best.id]);
+    await page.key('Escape');
+
+    assert.equal(await page.evaluate((sel) => document.querySelector(sel).draggable, `.tile[data-id="${img2.id}"]`), true);
+    await dragStart(`.tile[data-id="${img2.id}"]`);
+    await until(() => page.desktop.dragged.length === 2, 'a photo dragged out of the timeline');
+    assert.deepEqual(page.desktop.dragged[1], [img2.id]);
+
+    await page.click(`.tile[data-id="${img2.id}"] .pick`);
+    await page.click(`.tile[data-id="${img3.id}"] .pick`);
+    await page.waitFor(() => !document.querySelector('#select-whatsapp').hidden && document.querySelectorAll('.tile.selected').length === 2, null, 'two selected');
+    await page.click('#select-whatsapp');
+    await until(() => page.desktop.whatsApp.length === 2, 'the selection handed to WhatsApp');
+    assert.deepEqual([...page.desktop.whatsApp[1]].sort(), copies);
+    await dragStart(`.tile[data-id="${img3.id}"]`);
+    await until(() => page.desktop.dragged.length === 3, 'the selection dragged out');
+    assert.deepEqual([...page.desktop.dragged[2]].sort((a, b) => a - b), [img2.id, img3.id].sort((a, b) => a - b), 'a selected photo takes the selection along');
+
+    await page.desktop.answer('whatsapp-selected');
+    await page.rightClick(`.tile[data-id="${img2.id}"]`);
+    await until(() => page.desktop.whatsApp.length === 3, 'the selection sent from its menu');
+    assert.ok(page.desktop.menus[0].some((i) => i.id === 'whatsapp-selected' && i.label === 'Send 2 Photos to WhatsApp'));
+    assert.deepEqual([...page.desktop.whatsApp[2]].sort(), copies);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
+test("in the desktop app, the viewer's and the selection's buttons can be clicked, though they lie over the bar the window is dragged by", async () => {
+  const { tmp, server, best, img2 } = ctx;
+  const page = await openPage({ profile: path.join(tmp, 'electron-drag'), desktop: true });
+  // Every shown button of a bar: page.hover() fails on one macOS would take for dragging the window.
+  const each = async (bar) => {
+    const ids = await page.evaluate((sel) => [...document.querySelectorAll(`${sel} button`)].filter((b) => !b.hidden && b.offsetParent).map((b) => b.id), bar);
+    assert.ok(ids.length >= 2, `buttons in ${bar}`);
+    for (const id of ids) await page.hover(`#${id}`);
+    return ids;
+  };
+  try {
+    await page.load(`http://localhost:${server.address().port}/`);
+    await page.click(`.tile[data-id="${best.id}"]`);
+    await page.waitFor(() => !document.querySelector('#lightbox').hidden, null, 'the viewer');
+    const viewer = await each('.lb-top');
+    for (const id of ['lb-close', 'lb-fav', 'lb-copy', 'lb-info-btn']) assert.ok(viewer.includes(id), id);
+    await page.click('#lb-info-btn');
+    await page.waitFor(() => document.querySelector('#lb-info-btn').getAttribute('aria-expanded') === 'true', null, 'the info panel');
+    await page.click('#lb-close');
+    await page.waitFor(() => document.querySelector('#lightbox').hidden, null, 'the viewer to close');
+
+    await page.click(`.tile[data-id="${img2.id}"] .pick`);
+    await page.waitFor(() => !document.querySelector('#select-bar').hidden, null, 'the selection bar');
+    await each('.select-bar');
+    await page.click('#select-clear');
+    await page.waitFor(() => document.querySelector('#select-bar').hidden, null, 'the selection to end');
+    assert.deepEqual(page.errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
+test('in a browser, Share hands the photo to the system share sheet, named after it', async () => {
+  const { page, best } = ctx;
+  await home();
+  // A browser that can share files, standing in for Safari or a phone's browser.
+  await page.evaluate(() => {
+    window.shared = [];
+    for (const [name, value] of Object.entries({
+      canShare: () => true,
+      share: async ({ files }) => { window.shared.push(files.map((f) => [f.name, f.type, f.size > 0])); },
+    })) Object.defineProperty(navigator, name, { configurable: true, value });
+  });
+  try {
+    await page.click(`.tile[data-id="${best.id}"]`);
+    await page.waitFor(() => document.querySelector('#lb-name').textContent && !document.querySelector('#lb-share').hidden, null, 'the share button');
+    await page.evaluate(() => { document.querySelector('#toast').hidden = true; });
+    await page.click('#lb-share');
+    await page.waitFor(() => window.shared.length || (!document.querySelector('#toast').hidden && document.querySelector('#toast').textContent), null, 'the share sheet');
+    assert.deepEqual(await page.evaluate(() => window.shared), [[['PXL_1.jpg', 'image/jpeg', true]]], await page.evaluate(() => document.querySelector('#toast').textContent));
+  } finally {
+    await page.evaluate(() => { delete navigator.canShare; delete navigator.share; });
+    await page.key('Escape');
   }
 });
 
