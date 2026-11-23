@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { loadConfig, sourceProblem } from '../src/config.js';
 import { Library } from '../src/db.js';
 import { openLibrary, scanAll, startPhotobox } from '../src/app.js';
+import { FolderAccess } from '../src/access.js';
 import { writeManifest } from '../src/export.js';
 import { MANIFEST, readManifest } from '../src/manifest.js';
 import { loadHostSettings } from '../src/host-settings.js';
@@ -290,6 +291,7 @@ test("a host on an archive shows the archive's file as the library copy, and the
   const { dataDir, root, archive, takeout } = await archiveWithPhotos(t);
   const app = await startPhotobox({ dataDir, archive, port: 0, folders: [takeout] });
   t.after(() => app.close());
+  await app.scanned;
   await app.indexer.queue;
   assert.equal(loadHostSettings(dataDir).archive, root);
   const get = async (url) => (await fetch(`${app.url}${url}`)).json();
@@ -312,7 +314,7 @@ test("a new manifest has the archive's photos looked at again; nothing else in t
   const { library } = openLibrary(loadConfig({ dataDir, archive }));
   t.after(() => library.close());
   const scans = [];
-  const indexer = { scanSource: async (source) => scans.push(source.managed), scanFolders: async () => scans.push('folders'), error: () => {} };
+  const indexer = { access: new FolderAccess(), scanSource: async (source) => scans.push(source.managed), scanFolders: async () => scans.push('folders'), error: () => {} };
   const watcher = new SourceWatcher(library, indexer);
   t.after(() => watcher.close());
   watcher.start();

@@ -167,6 +167,12 @@ export function createApp({ library, indexer, watcher, config, network = null, u
 
   const scanInBackground = (source) => indexer.scanSource(source).catch((err) => indexer.error(source.path, err));
 
+  // Never on the main thread, and not at all while macOS is still asking you about the photo's folder
+  // (see access.js): a read now would wait for your answer.
+  const onDisk = (file) => fs.promises.access(file).then(() => true, () => false);
+  const waitingFor = (file) => Boolean(indexer.access?.pending(file));
+  const stillWaiting = (res) => res.status(503).json({ error: 'Waiting for permission to read this photo\'s folder: click Allow if your Mac asks' });
+
   const mediaOr404 = (req, res) => {
     const media = library.media(Number(req.params.id));
     if (!media) res.status(404).json({ error: 'Not found' });
@@ -234,7 +240,8 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     const media = mediaOr404(req, res);
     if (!media) return;
     const file = library.primaryPath(media.id);
-    if (!file || !fs.existsSync(file)) return res.status(410).json({ error: 'File is no longer on disk' });
+    if (file && waitingFor(file)) return stillWaiting(res);
+    if (!file || !await onDisk(file)) return res.status(410).json({ error: 'File is no longer on disk' });
     const ext = path.extname(file).toLowerCase();
     if (media.kind === 'video') {
       if (!BROWSER_VIDEO_EXT.has(ext)) return res.status(415).json({ error: `Can't play ${ext} in the browser` });
@@ -243,7 +250,7 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     if (BROWSER_IMAGE_EXT.has(ext)) return res.sendFile(file, SEND);
     const preview = previewPath(config, media.hash);
     try {
-      if (!fs.existsSync(preview)) await makePreview(file, preview);
+      if (!await onDisk(preview)) await makePreview(file, preview);
       res.sendFile(preview, CACHED);
     } catch (err) {
       res.status(415).json({ error: `Can't decode ${ext}: ${err.message}` });
@@ -254,6 +261,7 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     const video = library.mediaDetails(Number(req.params.id))?.live_video;
     const file = video && library.primaryPath(video);
     if (!file) return res.status(404).end();
+    if (waitingFor(file)) return stillWaiting(res);
     sendMedia(res, file);
   });
 
@@ -310,6 +318,21 @@ export function createApp({ library, indexer, watcher, config, network = null, u
     res.json({ ok: true });
   });
 
+  // The files to share for these photos (the desktop app's share menu): the library folder's copy, else the shown file.
+  app.post('/api/media/files', hostOnly, async (req, res) => {
+    const list = req.body?.ids;
+    if (!Array.isArray(list) || !list.length || list.length > 500 || !list.every((id) => Number.isSafeInteger(id) && id > 0)) {
+      return res.status(400).json({ error: 'ids must be a list of at most 500 photo ids' });
+    }
+    const files = [];
+    for (const id of list) {
+      const d = await details(id);
+      const file = d && (d.copy ?? library.primaryPath(id));
+      if (file && !waitingFor(file) && await onDisk(file)) files.push(file);
+    }
+    res.json({ files });
+  });
+
   // The user says this photo and one shown as its version are different photos.
   app.post('/api/media/:id/separate', hostOnly, async (req, res) => {
     const media = mediaOr404(req, res);
@@ -358,7 +381,11 @@ export function createApp({ library, indexer, watcher, config, network = null, u
   });
 
   app.post('/api/rescan', hostOnly, (req, res) => {
-    for (const source of library.sources()) scanInBackground(source);
+    // Watched too: a folder macOS let Photobox read only now isn't yet.
+    for (const source of library.sources()) {
+      watcher.watchSource(source);
+      scanInBackground(source);
+    }
     res.json({ ok: true });
   });
 

@@ -1,4 +1,5 @@
-// Synthetic, loopback-only fixture for the Kotlin/Node interoperability test.
+// Synthetic, loopback-only fixture for the interoperability tests of the Kotlin (Android) and
+// Swift (iPhone) clients: prints the native pairing payload, then the host's local URL.
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,3 +23,8 @@ async function close() {
 }
 process.on('SIGTERM', close);
 process.on('SIGINT', close);
+// Started by a test process that may die without stopping it: go when its pipe to us closes.
+if (process.env.PHOTOBOX_TEST_HOST_STDIN === '1') {
+  process.stdin.on('end', close);
+  process.stdin.resume();
+}

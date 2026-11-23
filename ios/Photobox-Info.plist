@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Photobox</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Photobox backs up your photos and videos to your computer, as the original files.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>To scan the pairing code Photobox shows on your computer.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>To find Photobox on your computer when its address on your Wi-Fi changes.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_photobox._tcp</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>local.photobox.ios.backup</string>
+		<string>local.photobox.ios.refresh</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

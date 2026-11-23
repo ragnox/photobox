@@ -32,6 +32,8 @@ const ICONS = {
   pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
   layers: '<path d="m12 2 10 5-10 5L2 7Z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>',
   trash: '<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/>',
+  share: '<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
 };
 const icon = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 for (const el of document.querySelectorAll('[data-icon]')) el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon));
@@ -299,6 +301,7 @@ function createTile(item) {
   const el = document.createElement('button');
   el.className = 'tile';
   el.dataset.id = item.id;
+  el.draggable = Boolean(desktop?.startDrag); // out of the desktop app, as the photo's file (see dragstart)
   el.setAttribute('aria-label', `${item.kind === 'video' ? 'Video' : 'Photo'}, ${fmtFull.format(wallClock(item.local_time))}`);
   if (item.thumb_w) {
     const img = document.createElement('img');
@@ -386,10 +389,14 @@ function showSelection() {
   document.body.classList.toggle('selecting', selecting());
   $('#select-bar').hidden = !selecting();
   $('#select-count').textContent = selected.size === 1 ? '1 selected' : `${selected.size} selected`;
+  $('#select-share').hidden = !canShare();
+  $('#select-whatsapp').hidden = !canWhatsApp();
 }
 
 $('#select-clear').addEventListener('click', clearSelection);
 $('#select-delete').addEventListener('click', () => deleteSelected());
+$('#select-share').addEventListener('click', (e) => share(state.items.filter((i) => selected.has(i.id)), below(e.currentTarget)));
+$('#select-whatsapp').addEventListener('click', () => sendToWhatsApp(state.items.filter((i) => selected.has(i.id))));
 
 let lastWidth = 0;
 new ResizeObserver(() => {
@@ -852,25 +859,28 @@ function renderPairing({ links, fingerprint, expiresAt }) {
     return;
   }
   pairBody.innerHTML = `
-    <label>Connect using <select id="pair-client"><option value="browser">Phone browser</option><option value="android">Photobox for Android</option></select></label>
+    <label>Connect using <select id="pair-client"><option value="browser">Phone browser</option><option value="android">Photobox for Android</option><option value="ios">Photobox for iPhone</option></select></label>
     <ol class="steps" id="pair-browser-steps">
       <li>On your phone, open the camera and scan this code. The phone needs to be on the same Wi-Fi or VPN.</li>
       ${fingerprint ? '<li>The first time, the browser warns that the connection is not private, because Photobox uses its own certificate. Tap <b>Advanced</b>, then <b>Proceed</b>.</li>' : ''}
       <li>Name the phone and tap <b>Connect</b>.</li>
     </ol>
     <p id="pair-android-steps" hidden>In Photobox for Android, tap <b>Scan host QR</b>. This code includes the host's public trust certificate; no browser certificate installation is needed.</p>
+    <p id="pair-ios-steps" hidden>In Photobox for iPhone, tap <b>Scan the code</b>. This code includes the host's public trust certificate; no certificate installation is needed.</p>
     <div class="qr" id="pair-qr">${links[0].qr}</div>
     ${links.length > 1 ? `<select id="pair-address" aria-label="Address">${links.map((l, i) => `<option value="${i}">${esc(new URL(l.url).host)}</option>`).join('')}</select>` : ''}
     <p class="muted small mono" id="pair-url">${esc(links[0].url)}</p>
-    <details id="pair-native-copy" hidden><summary>Copy Android pairing data</summary><textarea id="pair-native-payload" rows="4" readonly aria-label="Android pairing data"></textarea><button class="btn" id="pair-copy-native" type="button">Copy pairing data</button></details>
+    <details id="pair-native-copy" hidden><summary>Copy pairing data</summary><textarea id="pair-native-payload" rows="4" readonly aria-label="Pairing data for the app"></textarea><button class="btn" id="pair-copy-native" type="button">Copy pairing data</button></details>
     <p class="muted small">The code works once, until ${esc(fmtTime.format(new Date(expiresAt)))}.</p>
     ${fingerprint ? `<details class="muted small"><summary>Certificate fingerprint</summary>
       <p>When you install the Photobox certificate on your phone, its SHA-256 fingerprint must be:</p><p class="mono">${esc(fingerprint)}</p></details>` : ''}`;
   const update = () => {
     const link = links[Number($('#pair-address')?.value ?? 0)];
-    const native = $('#pair-client').value === 'android';
+    const client = $('#pair-client').value;
+    const native = client !== 'browser'; // the Android and iPhone apps read the same code
     $('#pair-browser-steps').hidden = native;
-    $('#pair-android-steps').hidden = !native;
+    $('#pair-android-steps').hidden = client !== 'android';
+    $('#pair-ios-steps').hidden = client !== 'ios';
     $('#pair-native-copy').hidden = !native;
     $('#pair-qr').classList.toggle('native-qr', native);
     $('#pair-qr').innerHTML = native ? link.native.qr : link.qr;
@@ -905,7 +915,7 @@ async function openPairDialog() {
       if (added) {
         clearInterval(pairTimer);
         pairBody.innerHTML = `<p class="paired">${icon('check')}<span><b>${esc(added.name)}</b> is connected.</span></p>
-          <p class="muted">In the Android app, choose your backup folders. In the browser, choose <b>Install app</b> or <b>Add to Home screen</b>.</p>`;
+          <p class="muted">In the Android app, choose your backup folders; the iPhone app starts backing up by itself. In the browser, choose <b>Install app</b> or <b>Add to Home screen</b>.</p>`;
       } else if (Date.now() > pairing.expiresAt) {
         clearInterval(pairTimer);
         pairBody.innerHTML = '<p>The pairing code has expired.</p><button type="button" class="btn" id="pair-again">Make a new code</button>';
@@ -1036,6 +1046,8 @@ async function showCurrent() {
   showFavorite(item.favorite);
   $('#lb-live').hidden = true;
   $('#lb-copy').hidden = item.kind !== 'image' || !canCopy();
+  $('#lb-share').hidden = !canShare();
+  $('#lb-whatsapp').hidden = !canWhatsApp();
   $('#lb-reveal').hidden = !canReveal();
   $('#lb-delete').hidden = !state.canDelete;
 
@@ -1057,6 +1069,75 @@ async function reveal(item, file = null) {
   const target = file ?? details.copy ?? details.files[0]?.path;
   if (target) desktop.reveal(target);
 }
+
+// --- sharing: macOS's share menu in the desktop app (AirDrop, Messages, WhatsApp…), the system's share sheet in a browser ---
+
+const nativeShare = () => Boolean(desktop?.share) && desktop.platform === 'darwin';
+const webShare = () => {
+  try { return Boolean(navigator.canShare?.({ files: [new File([''], 'photo.jpg', { type: 'image/jpeg' })] })); } catch { return false; }
+};
+const canShare = () => nativeShare() || webShare();
+const below = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.bottom + 4 }; };
+
+/** The files on this computer to share for these photos. */
+const filesOf = async (items) => (await api('/api/media/files', { method: 'POST', body: { ids: items.map((i) => i.id) } })).files;
+
+async function share(items, at = null) {
+  items = items.filter(Boolean);
+  if (!items.length || !canShare()) return;
+  try {
+    if (nativeShare()) {
+      if (!await desktop.share(await filesOf(items), at)) toast(items.length === 1 ? 'This photo is no longer on this computer' : 'These photos are no longer on this computer');
+      return;
+    }
+    // What the browser shows, so a phone gets a JPEG for a HEIC; named after the photo.
+    const files = await Promise.all(items.map(async (item) => {
+      const [res, { filename }] = await Promise.all([fetch(fullUrl(item.id)), lb.details?.id === item.id ? lb.details : api(`/api/media/${item.id}`)]);
+      if (!res.ok) throw new Error(`${filename} can't be shared from here`);
+      const blob = await res.blob();
+      const ext = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' }[blob.type];
+      const name = ext && !filename.toLowerCase().endsWith(ext) ? filename.replace(/\.[^.]*$/, '') + ext : filename;
+      return new File([blob], name, { type: blob.type });
+    }));
+    await navigator.share({ files });
+  } catch (err) {
+    if (err?.name !== 'AbortError') toast(`Couldn't share: ${err.message}`);
+  }
+}
+
+// WhatsApp for Mac has no share extension, so the share menu can't offer it. The desktop app hands it the
+// photos' files instead, and WhatsApp asks which chat they go to.
+let whatsApp = false;
+desktop?.whatsapp?.().then((found) => {
+  whatsApp = Boolean(found);
+  $('#select-whatsapp').hidden = !canWhatsApp();
+  if (!lightbox.hidden) $('#lb-whatsapp').hidden = !canWhatsApp();
+}).catch(() => {});
+const canWhatsApp = () => whatsApp;
+
+async function sendToWhatsApp(items) {
+  items = items.filter(Boolean);
+  if (!items.length || !canWhatsApp()) return;
+  try {
+    if (await desktop.sendToWhatsApp(await filesOf(items))) toast(items.length === 1 ? 'Pick the chat for it in WhatsApp' : 'Pick the chat for them in WhatsApp');
+    else toast(items.length === 1 ? 'This photo is no longer on this computer' : 'These photos are no longer on this computer');
+  } catch (err) {
+    toast(`Couldn't open WhatsApp: ${err.message}`);
+  }
+}
+
+// Photos dragged out of the desktop app go as their files: into a WhatsApp chat, a mail, a Finder folder.
+// A selected photo takes the rest of the selection along.
+addEventListener('dragstart', (e) => {
+  if (!desktop?.startDrag) return;
+  const tile = e.target.closest?.('.tile');
+  const inViewer = !tile && !lightbox.hidden && stage.contains(e.target);
+  const item = tile ? state.items.find((i) => i.id === Number(tile.dataset.id)) : inViewer ? state.items[lb.index] : null;
+  if (!item) return;
+  e.preventDefault();
+  const items = tile && selected.has(item.id) ? state.items.filter((i) => selected.has(i.id)) : [item];
+  desktop.startDrag(items.map((i) => i.id));
+});
 
 // The clipboard API needs a secure page: localhost, the desktop app or the paired HTTPS listener.
 const canCopy = () => Boolean(navigator.clipboard?.write && window.ClipboardItem);
@@ -1134,7 +1215,7 @@ async function deletePhoto(item = state.items[lb.index]) {
     body: `<p><b>${esc(d.filename)}</b>, taken ${esc(fmtFull.format(wallClock(d.local_time)))}.</p>
       <p>${files.length === 1 ? 'Its file on this computer goes' : `Its ${files.length} files on this computer go`} to the Trash${d.versions.length ? ', its other versions too' : ''}:</p>
       <ul class="places">${shown.map((f) => `<li>${esc(homePath(f))}</li>`).join('')}${files.length > shown.length ? `<li>and ${files.length - shown.length} more</li>` : ''}</ul>
-      <p>Phones with Photobox for Android delete their copy too, once you confirm it there.</p>
+      <p>Phones with Photobox for Android or iPhone delete their copy too, once you confirm it there.</p>
       <p class="muted small">Its fingerprint stays on the Deleted list, so a copy that turns up again is deleted too.</p>`,
   });
   if (!yes) return;
@@ -1197,7 +1278,7 @@ async function deleteSelected() {
     action: `Delete ${items.length}`,
     body: `<p>${esc(what)}, taken ${first === last ? `on ${esc(first)}` : `between ${esc(first)} and ${esc(last)}`}.</p>
       <p>Their files on this computer go to the Trash, their other versions too.</p>
-      <p>Phones with Photobox for Android delete their copies too, once you confirm it there.</p>
+      <p>Phones with Photobox for Android or iPhone delete their copies too, once you confirm it there.</p>
       <p class="muted small">Their fingerprints stay on the Deleted list, so a copy that turns up again is deleted too.</p>`,
   });
   if (!yes) return;
@@ -1380,6 +1461,8 @@ $('#lb-fav').addEventListener('click', toggleFavorite);
 $('#lb-live').addEventListener('click', playLive);
 $('#lb-live').addEventListener('mouseenter', playLive);
 $('#lb-reveal').addEventListener('click', () => reveal(state.items[lb.index]));
+$('#lb-share').addEventListener('click', (e) => share([state.items[lb.index]], below(e.currentTarget)));
+$('#lb-whatsapp').addEventListener('click', () => sendToWhatsApp([state.items[lb.index]]));
 $('#lb-copy').addEventListener('click', () => copyImage());
 $('#lb-info-btn').addEventListener('click', toggleInfo);
 
@@ -1390,12 +1473,16 @@ function photoActions(item, inViewer) {
   // On one of several selected photos, the menu is about the selection.
   if (!inViewer && selected.has(item.id) && selected.size > 1) {
     return [
+      ...(canShare() ? [{ id: 'share-selected', label: `Share ${selected.size} Photos`, keys: null }] : []),
+      ...(canWhatsApp() ? [{ id: 'whatsapp-selected', label: `Send ${selected.size} Photos to WhatsApp`, keys: null }] : []),
       { id: 'deselect', label: 'Deselect', keys: null },
       ...(state.canDelete ? [{ id: 'delete-selected', label: `Delete ${selected.size} Photos…`, keys: 'Backspace', separator: true }] : []),
     ];
   }
   return [
     ...(item.kind === 'image' && canCopy() ? [{ id: 'copy', label: 'Copy Photo', keys: inViewer ? 'CmdOrCtrl+C' : null }] : []),
+    ...(canShare() ? [{ id: 'share', label: 'Share', keys: null }] : []),
+    ...(canWhatsApp() ? [{ id: 'whatsapp', label: 'Send to WhatsApp', keys: null }] : []),
     ...(canReveal() ? [{ id: 'reveal', label: revealLabel(), keys: null }] : []),
     { id: 'info', label: inViewer && lightbox.classList.contains('info-open') ? 'Hide Info' : 'Get Info', keys: inViewer ? 'I' : null },
     ...(inViewer ? [] : [{ id: selected.has(item.id) ? 'deselect' : 'select', label: selected.has(item.id) ? 'Deselect' : 'Select', keys: null }]),
@@ -1405,6 +1492,10 @@ function photoActions(item, inViewer) {
 
 function runPhotoAction(id, item, inViewer) {
   if (id === 'copy') copyImage(item);
+  else if (id === 'share') share([item]);
+  else if (id === 'share-selected') share(state.items.filter((i) => selected.has(i.id)));
+  else if (id === 'whatsapp') sendToWhatsApp([item]);
+  else if (id === 'whatsapp-selected') sendToWhatsApp(state.items.filter((i) => selected.has(i.id)));
   else if (id === 'reveal') reveal(item);
   else if (id === 'delete') deletePhoto(item);
   else if (id === 'select' || id === 'deselect') toggleSelected(item);
@@ -1467,6 +1558,9 @@ addEventListener('contextmenu', async (e) => {
   if (!item) return;
   e.preventDefault();
   const actions = photoActions(item, inViewer);
+  // The desktop app shows macOS's share menu as a submenu: it needs the files up front.
+  const sharing = nativeShare() && actions.find((a) => a.id === 'share' || a.id === 'share-selected');
+  if (sharing) sharing.files = await filesOf(sharing.id === 'share' ? [item] : state.items.filter((i) => selected.has(i.id))).catch(() => []);
   const id = desktop?.contextMenu ? await desktop.contextMenu(actions) : await pageMenu(actions, e);
   if (id) runPhotoAction(id, item, inViewer);
 });

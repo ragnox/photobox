@@ -85,9 +85,9 @@ Deleting does this:
   and live photo clip. Finder's **Put Back** still works.
 - **On every device** it is gone from the timeline and albums at once. A paired phone's browser can
   delete too.
-- **On phones with Photobox for Android** the app asks you to confirm, and then Android moves the
-  phone's copy to its trash. Android doesn't let an app delete photos the camera made without asking.
-  A phone never uploads a deleted photo again.
+- **On phones with Photobox for Android or iPhone** the app asks you to confirm, and then the phone
+  moves its copy to its trash (Recently Deleted on an iPhone). Neither lets an app delete photos
+  without asking. A phone never uploads a deleted photo again.
 
 The sidebar's **Deleted** list has every deleted file's fingerprint (its SHA-256), where it was and what
 became of it: moved to the Trash, waiting for a drive that is unplugged, or deleted or kept on a phone.
@@ -300,8 +300,8 @@ This also serves Photobox to phones on your Wi-Fi or VPN, over HTTPS on port 456
 `0.0.0.0` (every network this computer is on) you can give one address, such as a WireGuard
 address. Nothing is reachable from the internet unless you forward a port yourself.
 With `0.0.0.0`, Photobox is announced on the local network (DNS-SD `_photobox._tcp`, through
-Bonjour on macOS or Avahi on Linux), so Photobox for Android finds this computer again when the
-Wi-Fi router gives it another address.
+Bonjour on macOS or Avahi on Linux), so Photobox for Android and Photobox for iPhone find this
+computer again when the Wi-Fi router gives it another address.
 
 1. On the computer, open Photobox and choose **Connect a phone** in the sidebar. It shows a QR
    code with a one-time pairing code.
@@ -337,6 +337,11 @@ backup, persistent resumable transfers, and host receipt tracking. Build its deb
 APK from `android/`, install it on Android 10+, then select **Photobox for Android**
 in the computer's pairing dialog. Device/OEM background acceptance is still pending;
 see the [verification matrix](docs/android-verification.md).
+
+The [iPhone client](ios/README.md) does the same over the same protocol: QR pairing, the
+original files from Photos (a Live Photo's video too), resumable uploads, receipts, and
+photos deleted in Photobox. Build it with Xcode from `ios/`, then select **Photobox for
+iPhone** in the pairing dialog. It hasn't been tried on a real iPhone yet.
 See the [implementation plan](docs/phone-backup-plan.md) and
 [native backup API](docs/backup-api.md). Reception alone does not make an item eligible
 for removal from the phone.
@@ -432,7 +437,7 @@ and `--tls-key`.
 - Reading `.zip` parts directly (extract them first).
 - Transcoding for videos the browser can't play (`.avi`, `.mts`, …). Those show a thumbnail and **Show in Finder**.
 - Writing metadata back into files. Favorites you set in Photobox live in its database.
-- Physical-device acceptance and release packaging for Android, and freeing phone space for photos
+- Physical-device acceptance and release packaging for Android and iPhone, and freeing phone space for photos
   that are safely backed up (deleting a photo you deleted in Photobox works already).
   The [phone backup plan](docs/phone-backup-plan.md) tracks the next milestones.
 - `--listen` in the desktop app. For now, start network access with `photobox serve --listen`.

@@ -16,17 +16,28 @@ export class SourceWatcher {
     this.library = library;
     this.indexer = indexer;
     this.watchers = new Map();
+    this.starting = new Set(); // sources whose folder is being read before it's watched
     this.pending = new Map();
+    this.closed = false;
   }
 
   start() {
     for (const source of this.library.sources()) this.watchSource(source);
   }
 
+  /** Watching opens the folder on the main thread, so only once a read of it has come back (see access.js). */
   watchSource(source) {
-    if (source.managed === 'backup') return;
-    if (this.watchers.has(source.id)) return;
-    if (source.managed === 'archive') return this.#watchArchive(source);
+    if (source.managed === 'backup' || this.closed) return;
+    if (this.watchers.has(source.id) || this.starting.has(source.id)) return;
+    this.starting.add(source.id);
+    this.indexer.access.readable(source.path).then((readable) => {
+      if (!this.starting.delete(source.id) || !readable || this.closed) return;
+      if (source.managed === 'archive') this.#watchArchive(source);
+      else this.#watch(source);
+    });
+  }
+
+  #watch(source) {
     const watcher = watch(source.path, {
       ignoreInitial: true,
       // The same folders a scan skips: hidden ones, Synology's @eaDir thumbnails, recycle bins, app libraries.
@@ -61,11 +72,14 @@ export class SourceWatcher {
   }
 
   async unwatch(sourceId) {
+    this.starting.delete(sourceId);
     await this.watchers.get(sourceId)?.close();
     this.watchers.delete(sourceId);
   }
 
   async close() {
+    this.closed = true;
+    this.starting.clear();
     await Promise.all([...this.watchers.values()].map((w) => w.close()));
     this.watchers.clear();
   }

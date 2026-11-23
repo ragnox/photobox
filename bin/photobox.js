@@ -176,8 +176,10 @@ function init(folder) {
 }
 
 const openBrowser = (url) => opts.open && process.platform === 'darwin' && execFile('open', [url]);
-const printScan = (source, { files, added, offline }) => {
-  console.log(offline ? `! ${source.path}: not available, skipped` : `✓ ${source.path}: ${files} media files, ${added} new`);
+const printScan = (source, { files, added, offline, refused }) => {
+  console.log(offline ? `! ${source.path}: not available, skipped`
+    : refused ? `! ${source.path}: Photobox may not read it, skipped`
+    : `✓ ${source.path}: ${files} media files, ${added} new`);
 };
 
 function logProgress(indexer) {
