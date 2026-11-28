@@ -72,7 +72,9 @@ test('init refuses folders that are already archives, broad folders and Photobox
   initArchive(root, { dataDir });
 
   assert.throws(() => initArchive(root, { dataDir }), /is already an archive/);
-  assert.throws(() => initArchive(path.join(root, 'Trip'), { dataDir }), /is inside the archive at/);
+  // A folder the archive has photos in is part of it: making it an archive of its own would split them.
+  await fs.writeFile(path.join(root, MANIFEST), JSON.stringify({ version: 1, items: { 'Trip/IMG_1.jpg': {} } }));
+  assert.throws(() => initArchive(path.join(root, 'Trip'), { dataDir }), /holds photos of the archive at/);
   assert.throws(() => initArchive(path.join(tmp, 'missing'), { dataDir }), /Not a folder/);
   assert.throws(() => initArchive(tmp, { dataDir, home: tmp }), /home folder/);
   assert.throws(() => initArchive(path.parse(tmp).root, { dataDir }), /root can't be an archive/);
@@ -398,4 +400,46 @@ test("an archive's manifest doesn't date a photo whose original Photobox reads, 
     library.close();
     assert.deepEqual([m.local_time, m.date_source], ['2024-11-20 21:16:25', 'filename'], `scanned ${order.join(', then ')}`);
   }
+});
+
+test("a folder inside an archive can be an archive of its own, which the archive around it and its sources leave alone", async (t) => {
+  const tmp = await fs.realpath(await tmpDir(t));
+  const dataDir = path.join(tmp, 'data');
+  const root = path.join(tmp, 'Pictures');
+  const guest = path.join(root, 'Guest');
+  await fs.mkdir(path.join(guest, '2024', '05'), { recursive: true });
+  initArchive(root, { dataDir });
+  const made = await photobox(tmp, path.join(tmp, 'guest-data'), 'init', guest);
+  assert.equal(made.code, 0, made.out);
+  assert.match(made.out, /library of its own: the archive at .*Pictures leaves it alone/);
+  assert.equal(findArchive(path.join(guest, '2024', '05')).root, guest);
+  assert.equal(findArchive(root).root, root);
+
+  // A source with an archive in it, and a folder in it that becomes one while it is watched.
+  const shared = path.join(tmp, 'Shared');
+  await fs.mkdir(path.join(shared, 'Family'), { recursive: true });
+  await fs.mkdir(path.join(shared, 'Later'));
+  initArchive(path.join(shared, 'Family'), { dataDir });
+  await fs.writeFile(path.join(shared, 'IMG_MINE.jpg'), await jpeg(200, 10, 10));
+  await fs.writeFile(path.join(shared, 'Family', 'IMG_FAM.jpg'), await jpeg(10, 200, 10));
+  const app = await startPhotobox({ dataDir, port: 0, folders: [shared] });
+  t.after(() => app.close());
+  await app.scanned;
+  await app.indexer.queue;
+  const get = async (url) => (await fetch(`${app.url}${url}`)).json();
+  const shown = async () => (await Promise.all((await get('/api/timeline')).items.map(async (i) => (await get(`/api/media/${i.id}`)).filename))).sort();
+  assert.deepEqual(await shown(), ['IMG_MINE.jpg']);
+
+  initArchive(path.join(shared, 'Later'), { dataDir });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await fs.writeFile(path.join(shared, 'Family', 'IMG_FAM2.jpg'), await jpeg(10, 10, 200));
+  await fs.writeFile(path.join(shared, 'Later', 'IMG_LATER.jpg'), await jpeg(90, 90, 10));
+  await fs.writeFile(path.join(shared, 'IMG_MINE2.jpg'), await jpeg(10, 90, 90));
+  for (let waited = 0; !(await shown()).includes('IMG_MINE2.jpg'); waited += 100) {
+    assert.ok(waited < 15_000, 'the watcher picks up a photo of the source itself');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  await app.indexer.queue;
+  assert.deepEqual(await shown(), ['IMG_MINE.jpg', 'IMG_MINE2.jpg']);
 });

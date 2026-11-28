@@ -14,6 +14,7 @@ import { exportLibrary, safeStem, withExportLock, WRITING } from '../src/export.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { MANIFEST } from '../src/manifest.js';
+import { initArchive } from '../src/archive.js';
 import { createHash } from 'node:crypto';
 
 async function setup(t) {
@@ -410,4 +411,19 @@ test('a Photobox in another process waits while one writes to the folder; a lock
   const held = await withExportLock(tmp, async () => JSON.parse(await fs.readFile(lock, 'utf8')).pid);
   assert.equal(held, process.pid, 'the lock of a process that is gone is taken over');
   assert.deepEqual(await fs.readdir(tmp), [], 'and let go of afterwards');
+});
+
+test("a photo gone from the export is copied again, not found in an archive of its own inside it", async (t) => {
+  const { tmp, library, add, dest, files, manifest } = await setup(t);
+  await add('a.jpg', { taken: '2021-01-10T10:00:00Z', local: '2021-01-10 11:00:00' });
+  await exportLibrary(library, dest);
+  await fs.rm(path.join(dest, '2021/01/a.jpg'));
+  // Someone else's library, with the same photo (sent to both of them, say).
+  await fs.mkdir(path.join(dest, 'Guest', '2021', '01'), { recursive: true });
+  initArchive(path.join(dest, 'Guest'), { dataDir: path.join(tmp, 'data') });
+  await fs.writeFile(path.join(dest, 'Guest', '2021', '01', 'a.jpg'), 'a.jpg');
+
+  assert.equal((await exportLibrary(library, dest)).copied, 1);
+  assert.deepEqual(Object.keys((await manifest()).items), ['2021/01/a.jpg']);
+  assert.ok((await files()).includes('Guest/2021/01/a.jpg'), 'its file stays where it is');
 });

@@ -7,7 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { digestFile, quickHash, statOrNull, syncDirectory, relPosix, isInside, isSkipped, readJson } from './files.js';
+import { digestFile, quickHash, statOrNull, syncDirectory, relPosix, isInside, isSkipped, isArchiveRoot, readJson } from './files.js';
 import { mediaKind, stripMediaExt } from './media.js';
 import { DATE_RANK } from './dates.js';
 import { FolderContext, extractMeta } from './indexer.js';
@@ -82,6 +82,7 @@ async function unsortedFiles(root, { kept, sources }) {
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.') || (dir === root && SORTED.test(entry.name))) continue;
         if (isSkipped(entry.name)) leftAlone.push({ rel: fileRel, reason: 'an app library or system folder' });
+        else if (isArchiveRoot(file)) leftAlone.push({ rel: fileRel, reason: 'an archive of its own' });
         else if (kept.includes(fileRel.normalize('NFC'))) leftAlone.push({ rel: fileRel, reason: 'kept in place' });
         else if (sources.includes(file.normalize('NFC'))) leftAlone.push({ rel: fileRel, reason: 'a source of this archive' });
         else await visit(file);

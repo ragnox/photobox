@@ -192,3 +192,13 @@ test('an export into a sorted archive finds the photos there and keeps their fol
   assert.equal(manifest.items['2017/03/IMG_1.jpg'].sortedFrom, 'BVI 2017/IMG_1.jpg');
   assert.ok(manifest.items['2020/05/new.jpg']);
 });
+
+test('an archive of its own inside the archive is left alone: its photos are not sorted in', async (t) => {
+  const { root, put, dataDir } = await setup(t);
+  await put('Guest/IMG_o.jpg', await photo({ r: 4, g: 40, b: 4 }, '2021:06:01 10:00:00'));
+  initArchive(path.join(root, 'Guest'), { dataDir });
+  const plan = await sortArchive(root, { dryRun: true });
+  assert.ok(plan.leftAlone.some((l) => l.rel === 'Guest' && l.reason === 'an archive of its own'));
+  assert.ok(!plan.moves.some((m) => m.item.rel.startsWith('Guest/')));
+  assert.ok(!plan.duplicates.some((d) => d.item.rel.startsWith('Guest/')));
+});

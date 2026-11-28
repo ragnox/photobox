@@ -102,6 +102,12 @@ iPhone come later. The design keeps them possible:
 - **Finding the archive.** Photobox walks up from the folder you open to the nearest folder
   with `.photobox/archive.json`, the way git finds `.git`. `photobox init <folder>` creates
   one. A folder outside any archive can still be browsed, as today, without history.
+- **An archive inside an archive.** A folder in an archive can be an archive of its own: a
+  library of its own, for someone else's photos say, that still goes wherever the outer
+  archive's folder is copied. The outer archive leaves it alone. Its scans, watcher, sort and
+  export don't go into it, and neither does any source that holds it. `photobox init` refuses
+  a folder whose photos the outer archive already lists, because that would split them
+  between two libraries.
 - **Archive id.** A random id that copies keep. Photobox recognizes a backup drive as a copy
   of the same archive, and keeps the caches of two different archives apart.
 - **Paths** inside `.photobox/` are relative to the archive root (`/` separators, Unicode

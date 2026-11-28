@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { watch } from 'chokidar';
 import { mediaKind } from './media.js';
-import { isSkipped } from './files.js';
+import { isArchiveRoot, isSkipped, otherArchiveOf } from './files.js';
 import { isInTakeout } from './takeout/sidecar.js';
 import { MANIFEST } from './manifest.js';
 
@@ -40,13 +40,16 @@ export class SourceWatcher {
   #watch(source) {
     const watcher = watch(source.path, {
       ignoreInitial: true,
-      // The same folders a scan skips: hidden ones, Synology's @eaDir thumbnails, recycle bins, app libraries.
-      ignored: (file, stats) => isSkipped(path.basename(file)) || (stats?.isFile() && !relevant(file)),
+      // The same folders a scan skips: hidden ones, Synology's @eaDir thumbnails, recycle bins, app libraries,
+      // and an archive of its own inside the source.
+      ignored: (file, stats) => isSkipped(path.basename(file)) || (stats?.isFile() && !relevant(file)) ||
+        Boolean(stats?.isDirectory() && file !== source.path && isArchiveRoot(file)),
       awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 250 },
     });
     watcher
-      .on('add', (file) => this.#queue(source, 'changed', file))
-      .on('change', (file) => this.#queue(source, 'changed', file))
+      // A folder made an archive of its own after the watch began is left alone too.
+      .on('add', (file) => otherArchiveOf(file, source.path) || this.#queue(source, 'changed', file))
+      .on('change', (file) => otherArchiveOf(file, source.path) || this.#queue(source, 'changed', file))
       .on('unlink', (file) => this.#queue(source, 'removed', file))
       .on('unlinkDir', (dir) => {
         const prefix = dir + path.sep;

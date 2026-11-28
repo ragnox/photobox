@@ -1,6 +1,7 @@
 // File helpers shared by the indexer, the export, the manifest and the watcher:
 // which names to skip, walking folders, the content fingerprint, small path utilities.
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
@@ -70,7 +71,24 @@ export async function digestFile(file, flush = false, onProgress = null) {
   }
 }
 
-/** The files in `dir`, and with `recursive` in every folder below it. A folder that can't be read yields nothing. */
+/** `dir` is a Photobox archive (see archive.js): a library of its own, someone else's photos say. */
+export const isArchiveRoot = (dir) => fsSync.existsSync(path.join(dir, '.photobox', 'archive.json'));
+
+/**
+ * The archive below `root` that `file` lies in, or null: another library, which a scan, the
+ * watcher, a sort and an export of the folder around it leave alone.
+ */
+export function otherArchiveOf(file, root) {
+  for (let dir = path.dirname(file); dir !== root && isInside(dir, root); dir = path.dirname(dir)) {
+    if (isArchiveRoot(dir)) return dir;
+  }
+  return null;
+}
+
+/**
+ * The files in `dir`, and with `recursive` in every folder below it. A folder that can't be read
+ * yields nothing, and an archive of its own below `dir` isn't gone into.
+ */
 export async function* walk(dir, { recursive = true, exclude = () => false } = {}) {
   if (exclude(dir)) return;
   let entries;
@@ -84,7 +102,7 @@ export async function* walk(dir, { recursive = true, exclude = () => false } = {
     const full = path.join(dir, entry.name);
     if (exclude(full)) continue;
     if (entry.isDirectory()) {
-      if (recursive) yield* walk(full, { exclude });
+      if (recursive && !isArchiveRoot(full)) yield* walk(full, { exclude });
     } else if (entry.isFile()) {
       yield full;
     }

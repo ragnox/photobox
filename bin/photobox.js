@@ -164,10 +164,12 @@ for (const dir of folders) if (!fs.statSync(dir, { throwIfNoEntry: false })?.isD
 
 function init(folder) {
   try {
+    const outer = findArchive(path.dirname(path.resolve(folder)));
     const created = initArchive(folder, { dataDir });
     const { libraryDir } = loadConfig({ dataDir, archive: created });
     console.log(`✓ ${created.root} is now a Photobox archive`);
     console.log(`  Its history and settings go in ${path.join(created.root, ARCHIVE_DIR)}, its library in ${libraryDir}.`);
+    if (outer) console.log(`  It is a library of its own: the archive at ${outer.root} leaves it alone.`);
     console.log('  Run photobox in it, or pass --archive: photobox export then copies into it.');
     process.exit(0);
   } catch (err) {

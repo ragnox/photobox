@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isInside } from './files.js';
+import { isInside, relPosix } from './files.js';
+import { MANIFEST } from './manifest.js';
 
 export const ARCHIVE_DIR = '.photobox';
 const ARCHIVE_FILE = 'archive.json';
@@ -37,15 +38,18 @@ export function findArchive(dir) {
 
 /**
  * Make `folder` an archive: `.photobox/archive.json` with a random id that copies keep.
- * Refuses a folder already in an archive, the home folder (its `.photobox` is Photobox's own
- * data), a disk's root, and Photobox's data folder.
+ * Refuses a folder that is an archive already, the home folder (its `.photobox` is Photobox's own
+ * data), a disk's root, and Photobox's data folder. A folder inside another archive can be one, a
+ * library of its own (someone else's photos, say) that the archive around it leaves alone, but
+ * not while that archive has photos in it.
  */
 export function initArchive(folder, { dataDir, home = os.homedir() } = {}) {
   const root = path.resolve(folder);
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Not a folder: ${root}`);
   const existing = findArchive(root);
-  if (existing) {
-    throw new Error(existing.root === root ? `${root} is already an archive` : `${root} is inside the archive at ${existing.root}`);
+  if (existing?.root === root) throw new Error(`${root} is already an archive`);
+  if (existing && holdsPhotosOf(existing.root, root)) {
+    throw new Error(`${root} holds photos of the archive at ${existing.root} - choose an empty folder, or one with photos of its own`);
   }
   if (root === path.resolve(home)) throw new Error('The home folder itself can\'t be an archive - choose a folder in it, like ~/Pictures');
   if (path.dirname(root) === root) throw new Error('A disk\'s root can\'t be an archive - choose a folder on it');
@@ -56,4 +60,17 @@ export function initArchive(folder, { dataDir, home = os.homedir() } = {}) {
   const archive = { version: 1, id: randomUUID(), createdAt: new Date().toISOString() };
   fs.writeFileSync(archiveFile(root), `${JSON.stringify(archive, null, 2)}\n`, { flag: 'wx' });
   return readArchive(root);
+}
+
+/** Does the manifest of the archive at `outer` list a photo in `dir`? Those are its photos, not `dir`'s own. */
+function holdsPhotosOf(outer, dir) {
+  let items;
+  try {
+    items = JSON.parse(fs.readFileSync(path.join(outer, MANIFEST), 'utf8'))?.items;
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw new Error(`Cannot read ${path.join(outer, MANIFEST)}: ${err.message}`);
+  }
+  const prefix = `${relPosix(outer, dir).normalize('NFC')}/`;
+  return Object.keys(items ?? {}).some((rel) => rel.normalize('NFC').startsWith(prefix));
 }
